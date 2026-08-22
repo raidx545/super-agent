@@ -1,15 +1,19 @@
 // ============================================================
-
-// VLESS — Full Pipeline
-// End-to-end flow: Capture → Detect PII → Redact → Send → Execute
+// VLESS — Full Pipeline (Service Worker)
+// Runs entirely in the background service worker.
+// Communicates with content script via messages for:
+//   - DOM extraction (PERCEIVE_PAGE)
+//   - Screenshot capture (DO_CAPTURE_TAB / CAPTURE_SCREENSHOT)
+//   - Action execution (EXECUTE_ACTION)
+//   - Visual overlay (SHOW_PII_OVERLAY / INJECT_REDACTION_CSS)
 //
-// This is the core of the product. Everything flows through here.
+// NEVER accesses document, window, or DOM APIs.
 // ============================================================
 
 import { detectAllPII, type PIIDetectionResult } from "../privacy/pii-detector";
-import { type RedactionResult, generateDOMRedactionCSS } from "../privacy/redaction-engine";
+import { generateDOMRedactionCSS } from "../privacy/redaction-engine";
 import { initializeServer, isServerAvailable, getActiveProvider, type SanitizedContext, type PlanResult } from "../agent/server-bridge";
-import type { PlannedAction } from "../../types";
+import type { PlannedAction, PageState, Message } from "../../types";
 
 // ── Pipeline Types ───────────────────────────────────────────
 
@@ -25,7 +29,7 @@ export interface PipelineResult {
   steps: PipelineStep[];
   plan: PlannedAction[];
   piiDetection: PIIDetectionResult;
-  redaction: RedactionResult;
+  redactionSummary: RedactionSummary;
   planResult: PlanResult;
   privacyProof: PrivacyProof;
   totalLatencyMs: number;
@@ -37,7 +41,13 @@ export interface PipelineStep {
   status: "pending" | "running" | "complete" | "error";
   latencyMs: number;
   details: string;
-  data?: unknown;
+}
+
+export interface RedactionSummary {
+  totalPII: number;
+  redacted: number;
+  cssInjected: boolean;
+  overlayShown: boolean;
 }
 
 export interface PrivacyProof {
@@ -57,76 +67,38 @@ export interface PrivacyProof {
 
 // ── Pipeline State ───────────────────────────────────────────
 
-let currentPipeline: PipelineState | null = null;
-
-interface PipelineState {
-  id: string;
-  input: PipelineInput;
-  steps: PipelineStep[];
-  startTime: number;
-  abortController: AbortController;
-  listeners: Array<(step: PipelineStep) => void>;
-}
-
 // ── Main Pipeline ────────────────────────────────────────────
 
-/**
- * Execute the full pipeline from task input to completion.
- * This is the single entry point for all agent operations.
- */
 export async function executeFullPipeline(
   input: PipelineInput
 ): Promise<PipelineResult> {
-  const pipelineId = `pipeline-${Date.now()}`;
+
   const startTime = performance.now();
   const steps: PipelineStep[] = [];
-  const abortController = new AbortController();
-
-  currentPipeline = {
-    id: pipelineId,
-    input,
-    steps,
-    startTime,
-    abortController,
-    listeners: [],
-  };
 
   const addStep = (name: string): PipelineStep => {
-    const step: PipelineStep = {
-      name,
-      status: "pending",
-      latencyMs: 0,
-      details: "",
-    };
+    const step: PipelineStep = { name, status: "pending", latencyMs: 0, details: "" };
     steps.push(step);
-    notifyStep(step);
     return step;
   };
 
-  const runStep = async <T>(
-    step: PipelineStep,
-    fn: () => Promise<T>
-  ): Promise<T | null> => {
+  const runStep = async <T>(step: PipelineStep, fn: () => Promise<T>): Promise<T | null> => {
     step.status = "running";
-    const stepStart = performance.now();
-    notifyStep(step);
-
+    const t0 = performance.now();
     try {
       const result = await fn();
       step.status = "complete";
-      step.latencyMs = performance.now() - stepStart;
-      notifyStep(step);
+      step.latencyMs = performance.now() - t0;
       return result;
-    } catch (error) {
+    } catch (err) {
       step.status = "error";
-      step.latencyMs = performance.now() - stepStart;
-      step.details = error instanceof Error ? error.message : "Unknown error";
-      notifyStep(step);
+      step.latencyMs = performance.now() - t0;
+      step.details = err instanceof Error ? err.message : "Unknown error";
       return null;
     }
   };
 
-  // Default privacy proof (no data sent)
+  // Default privacy proof
   let privacyProof: PrivacyProof = {
     sensitiveDataDetected: 0,
     sensitiveDataRedacted: 0,
@@ -145,11 +117,7 @@ export async function executeFullPipeline(
   let piiDetection: PIIDetectionResult = {
     regions: [],
     summary: {
-      totalRegions: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
+      totalRegions: 0, criticalCount: 0, highCount: 0, mediumCount: 0, lowCount: 0,
       byCategory: {} as any,
       bySource: { dom: 0, vision: 0, combined: 0 },
       overallConfidence: 0,
@@ -163,33 +131,48 @@ export async function executeFullPipeline(
     },
   };
 
-  let redaction: RedactionResult = {
-    redactedCanvas: document.createElement("canvas"),
-    redactionMap: [],
-    stats: {
-      totalRegions: 0, redactedRegions: 0, skippedRegions: 0,
-      pixelsAffected: 0, totalPixels: 0, redactionPercentage: 0,
-      strategyBreakdown: { blur: 0, black_box: 0, pixelate: 0, mask_text: 0, overlay: 0, none: 0 },
-      processingTimeMs: 0,
-    },
+  let redactionSummary: RedactionSummary = {
+    totalPII: 0,
+    redacted: 0,
+    cssInjected: false,
+    overlayShown: false,
   };
 
   let planResult: PlanResult = {
-    success: false, steps: [], reasoning: "", provider: "none", latencyMs: 0,
+    success: false,
+    steps: [],
+    reasoning: "",
+    provider: "none",
+    latencyMs: 0,
   };
 
   try {
     // ════════════════════════════════════════════════════════
-    // PHASE 1: CAPTURE — Get DOM data from active tab
+    // PHASE 1: CAPTURE — DOM + Screenshot from content script
     // ════════════════════════════════════════════════════════
 
     const captureStep = addStep("capture");
-    const domData = await runStep(captureStep, async () => {
-      return capturePageData(input.tabId);
-    });
+    captureStep.status = "running";
 
+    // Get DOM data from content script
+    const domData = await sendToContentScript("PERCEIVE_PAGE", null);
     if (!domData) {
-      return buildErrorResult("Failed to capture page data", steps, startTime);
+      captureStep.status = "error";
+      captureStep.details = "Failed to get page data from content script";
+      return buildErrorResult("Content script not available. Reload the page.", steps, startTime);
+    }
+    captureStep.details = `${domData.elements.length} elements, ${domData.forms.length} forms`;
+    captureStep.status = "complete";
+    captureStep.latencyMs = 0; // Will be set by content script timing
+
+    // Capture screenshot (best effort — may fail on some pages)
+    try {
+      const screenshot = await sendToContentScript("CAPTURE_SCREENSHOT", null);
+      if (screenshot?.success) {
+        captureStep.details += `, screenshot captured`;
+      }
+    } catch {
+      // Screenshot is optional — DOM-only path still works
     }
 
     // ════════════════════════════════════════════════════════
@@ -203,43 +186,53 @@ export async function executeFullPipeline(
 
     if (detectionResult) {
       piiDetection = detectionResult;
-      detectStep.details = `Found ${detectionResult.summary.totalRegions} PII regions ` +
-        `(${detectionResult.summary.criticalCount} critical, ` +
-        `${detectionResult.summary.highCount} high)`;
+      detectStep.details = `${detectionResult.summary.totalRegions} PII regions ` +
+        `(${detectionResult.summary.criticalCount} critical, ${detectionResult.summary.highCount} high)`;
       privacyProof.sensitiveDataDetected = detectionResult.summary.totalRegions;
     }
 
     // ════════════════════════════════════════════════════════
-    // PHASE 3: REDACT — Apply visual redaction
+    // PHASE 3: REDACT — Apply CSS redaction + show overlay
     // ════════════════════════════════════════════════════════
 
     const redactStep = addStep("redact");
-    const redactionResult = await runStep(redactStep, async () => {
-      // Generate DOM redaction CSS
+    const redactResult = await runStep(redactStep, async () => {
+      // Inject redaction CSS into the page
       const css = generateDOMRedactionCSS(piiDetection.regions);
-      injectRedactionCSS(css);
+      if (css.trim()) {
+        await sendToContentScript("INJECT_REDACTION_CSS", css);
+        redactionSummary.cssInjected = true;
+      }
 
-      // If we have a screenshot canvas, apply canvas redaction
-      // For now, redact is a no-op on canvas since we use DOM
-      return {
-        redactedCanvas: document.createElement("canvas"),
-        redactionMap: [],
-        stats: {
-          totalRegions: piiDetection.regions.length,
-          redactedRegions: piiDetection.regions.filter(r => r.redactionStrategy !== "none").length,
-          skippedRegions: 0,
-          pixelsAffected: 0,
-          totalPixels: 0,
-          redactionPercentage: 0,
-          strategyBreakdown: { blur: 0, black_box: 0, pixelate: 0, mask_text: 0, overlay: 0, none: 0 },
-          processingTimeMs: 0,
+      // Show PII overlay on the page
+      await sendToContentScript("SHOW_PII_OVERLAY", {
+        regions: piiDetection.regions
+          .filter((r) => r.boundingBox)
+          .map((r) => ({
+            id: r.id,
+            category: r.category,
+            sensitivity: r.sensitivity,
+            boundingBox: r.boundingBox!,
+            confidence: r.confidence,
+          })),
+        summary: {
+          totalRegions: piiDetection.summary.totalRegions,
+          criticalCount: piiDetection.summary.criticalCount,
+          highCount: piiDetection.summary.highCount,
         },
-      };
+      });
+      redactionSummary.overlayShown = true;
+
+      return true;
     });
 
-    if (redactionResult) {
-      redaction = redactionResult;
-      privacyProof.sensitiveDataRedacted = redactionResult.stats.redactedRegions;
+    if (redactResult) {
+      redactionSummary.totalPII = piiDetection.regions.length;
+      redactionSummary.redacted = piiDetection.regions.filter(
+        (r) => r.redactionStrategy !== "none"
+      ).length;
+      privacyProof.sensitiveDataRedacted = redactionSummary.redacted;
+      redactStep.details = `${redactionSummary.redacted} regions redacted`;
     }
 
     // ════════════════════════════════════════════════════════
@@ -251,14 +244,14 @@ export async function executeFullPipeline(
       await initializeServer();
       if (isServerAvailable()) {
         const provider = getActiveProvider();
-        serverStep.details = `Connected to ${provider?.name} (${provider?.model})`;
+        serverStep.details = `${provider?.name} (${provider?.model})`;
       } else {
-        serverStep.details = "No server available — will use rule-based fallback";
+        serverStep.details = "No server — rule-based fallback";
       }
     });
 
     // ════════════════════════════════════════════════════════
-    // PHASE 5: BUILD SANITIZED CONTEXT — Prepare safe data
+    // PHASE 5: BUILD SANITIZED CONTEXT
     // ════════════════════════════════════════════════════════
 
     const sanitizeStep = addStep("sanitize");
@@ -269,9 +262,10 @@ export async function executeFullPipeline(
     if (!sanitizedContext) {
       return buildErrorResult("Failed to build sanitized context", steps, startTime);
     }
+    sanitizeStep.details = "Context sanitized";
 
     // ════════════════════════════════════════════════════════
-    // PHASE 6: GET PLAN — Ask LLM for action plan
+    // PHASE 6: GET PLAN — Ask LLM or use rules
     // ════════════════════════════════════════════════════════
 
     const planStep = addStep("get_plan");
@@ -284,23 +278,34 @@ export async function executeFullPipeline(
           input.dataContext
         );
       }
-
-      // Fallback: rule-based planning
       return generateRuleBasedPlan(input.taskDescription, domData, input.dataContext);
     });
 
     if (planResultData) {
       planResult = planResultData;
-      planStep.details = `${planResult.steps.length} steps from ${planResult.provider}`;
+      planStep.details = `${planResult.steps.length} steps (${planResult.provider})`;
     }
 
     // ════════════════════════════════════════════════════════
-    // PHASE 7: BUILD PRIVACY PROOF
+    // PHASE 7: SHOW PIPELINE STATUS PANEL
     // ════════════════════════════════════════════════════════
 
+    await sendToContentScript("SHOW_PIPELINE_PANEL", {
+      steps: steps.map((s) => ({
+        name: s.name.replace("_", " "),
+        status: s.status,
+        details: s.details,
+      })),
+      privacyScore: privacyProof.zeroOutboundPII ? 100 : 50,
+      piiDetected: privacyProof.sensitiveDataDetected,
+      piiRedacted: privacyProof.sensitiveDataRedacted,
+    });
+
+    // Build privacy proof
     privacyProof.proofDescription = generatePrivacyProofDescription(privacyProof);
 
     const totalLatency = performance.now() - startTime;
+
 
     return {
       success: planResult.success || planResult.steps.length > 0,
@@ -308,12 +313,13 @@ export async function executeFullPipeline(
       steps,
       plan: planResult.steps,
       piiDetection,
-      redaction,
+      redactionSummary,
       planResult,
       privacyProof,
       totalLatencyMs: totalLatency,
     };
   } catch (error) {
+
     return buildErrorResult(
       error instanceof Error ? error.message : "Pipeline failed",
       steps,
@@ -322,100 +328,85 @@ export async function executeFullPipeline(
   }
 }
 
-// ── Capture Page Data ────────────────────────────────────────
+// ── Execute Plan Steps ──────────────────────────────────────
 
-async function capturePageData(tabId?: number): Promise<{
-  elements: any[];
-  forms: any[];
-  textContent: string;
-  metadata: any;
-} | null> {
-  try {
-    if (tabId) {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const SELECTORS = [
-            "a[href]", "button", "input", "select", "textarea",
-            '[role="button"]', '[role="link"]', '[role="tab"]',
-            '[role="checkbox"]', '[role="radio"]', '[role="switch"]',
-            '[role="combobox"]', '[contenteditable="true"]', "[tabindex]",
-          ].join(", ");
+export async function executePlanSteps(
+  plan: PlannedAction[],
+  dataContext?: Record<string, string>
+): Promise<{ success: boolean; completed: number; total: number; errors: string[] }> {
+  let completed = 0;
+  const errors: string[] = [];
 
-          const elements = Array.from(document.querySelectorAll(SELECTORS))
-            .filter((el) => {
-              const r = el.getBoundingClientRect();
-              const s = window.getComputedStyle(el);
-              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
-            })
-            .map((el, i) => {
-              const r = el.getBoundingClientRect();
-              return {
-                id: el.id || `el-${i}`,
-                tag: el.tagName.toLowerCase(),
-                role: el.getAttribute("role") || "",
-                text: (el.textContent?.trim() || "").slice(0, 100),
-                label: el.getAttribute("aria-label") || el.getAttribute("placeholder") || "",
-                type: el.getAttribute("type") || "",
-                ariaLabel: el.getAttribute("aria-label") || "",
-                placeholder: el.getAttribute("placeholder") || "",
-                rect: { x: r.x, y: r.y, width: r.width, height: r.height },
-                isVisible: true,
-                isDisabled: el.hasAttribute("disabled"),
-              };
-            });
-
-          const forms = Array.from(document.querySelectorAll("form")).map((form, i) => ({
-            id: form.id || `form-${i}`,
-            action: form.action,
-            method: form.method,
-            fields: Array.from(form.querySelectorAll("input, select, textarea")).map((input) => {
-              const r = input.getBoundingClientRect();
-              return {
-                name: input.getAttribute("name") || "",
-                id: input.id || "",
-                type: input.getAttribute("type") || input.tagName.toLowerCase(),
-                value: (input as HTMLInputElement).value || "",
-                required: input.hasAttribute("required"),
-                maxLength: parseInt(input.getAttribute("maxlength") || "0"),
-                pattern: input.getAttribute("pattern") || "",
-                options: input.tagName === "SELECT"
-                  ? Array.from((input as HTMLSelectElement).options).map((o) => o.text)
-                  : [],
-                label: input.getAttribute("aria-label") || input.getAttribute("placeholder") || "",
-                rect: { x: r.x, y: r.y, width: r.width, height: r.height },
-              };
-            }),
-          }));
-
-          return {
-            elements,
-            forms,
-            textContent: document.body?.innerText?.slice(0, 5000) || "",
-            metadata: {
-              title: document.title,
-              domain: window.location.hostname,
-              hasCAPTCHA: /recaptcha|hcaptcha|turnstile/i.test(document.documentElement.outerHTML),
-              hasForm: forms.length > 0,
-              hasPaymentForm: /payment|card|billing/i.test(document.body.innerText),
-              elementCount: elements.length,
-            },
-          };
-        },
-      });
-
-      return results?.[0]?.result as any || null;
+  for (const step of plan) {
+    // Resolve data values
+    if (step.action.type === "type" && dataContext) {
+      const target = step.action.target || "";
+      step.action.value = dataContext[target] || step.action.value || "";
     }
-  } catch (error) {
-    console.error("🐾 [Pipeline] Capture failed:", error);
+
+    // Execute via content script
+    const result = await sendToContentScript("EXECUTE_ACTION", step.action);
+
+    if (result?.success) {
+      completed++;
+    } else {
+      errors.push(`Step ${step.index}: ${result?.error || "Unknown error"}`);
+      if (errors.length > 3) break; // Stop after 3 failures
+    }
+
+    // Brief pause between actions (human-like pacing)
+    await sleep(300 + Math.random() * 200);
   }
-  return null;
+
+  return {
+    success: completed === plan.length,
+    completed,
+    total: plan.length,
+    errors,
+  };
+}
+
+// ── Message Helpers ──────────────────────────────────────────
+
+async function sendToContentScript(type: string, payload: unknown): Promise<any> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+
+    return chrome.tabs.sendMessage(tab.id, {
+      type,
+      payload,
+      source: "background",
+      timestamp: Date.now(),
+    } as Message);
+  } catch {
+    // Try injecting content script first
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) return null;
+
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+      await sleep(200);
+
+      return chrome.tabs.sendMessage(tab.id, {
+        type,
+        payload,
+        source: "background",
+        timestamp: Date.now(),
+      } as Message);
+    } catch {
+      return null;
+    }
+  }
 }
 
 // ── Build Sanitized Context ──────────────────────────────────
 
 function buildSanitizedContext(
-  domData: any,
+  domData: PageState,
   piiDetection: PIIDetectionResult,
   taskDescription: string,
   dataContext?: Record<string, string>
@@ -432,32 +423,34 @@ function buildSanitizedContext(
       .map((r) => r.textValue!)
   );
 
-  // Sanitize text content: replace PII values with ***
+  // Sanitize text: replace PII values with ***
   let safeTextContent = domData.textContent || "";
   for (const piiText of piiTextValues) {
     if (piiText && safeTextContent.includes(piiText)) {
-      safeTextContent = safeTextContent.replace(new RegExp(escapeRegex(piiText), "g"), "***");
+      safeTextContent = safeTextContent.replace(
+        new RegExp(escapeRegex(piiText), "g"),
+        "***"
+      );
     }
   }
 
-  // Build safe element list (no PII values)
-  const safeElements = domData.elements.map((el: any) => ({
+  // Safe elements (no PII values)
+  const safeElements = domData.elements.map((el) => ({
     tag: el.tag,
     role: el.role,
     label: el.label || el.text || "",
     type: el.type,
-    rect: el.rect,
+    rect: { x: el.rect.x, y: el.rect.y, width: el.rect.width, height: el.rect.height },
     isVisible: el.isVisible,
     isDisabled: el.isDisabled,
   }));
 
-  // Build safe form list (hasValue instead of actual values)
-  const safeForms = domData.forms.map((form: any) => ({
+  // Safe forms (hasValue flag instead of actual values)
+  const safeForms = domData.forms.map((form) => ({
     id: form.id,
-    fields: form.fields.map((field: any) => {
+    fields: form.fields.map((field) => {
       const selector = field.id ? `#${field.id}` : field.name ? `[name="${field.name}"]` : null;
       const isPII = selector ? piiFieldSelectors.has(selector) : false;
-
       return {
         label: field.label || field.name || "",
         type: field.type,
@@ -476,12 +469,12 @@ function buildSanitizedContext(
       forms: safeForms,
       safeTextContent,
       metadata: {
-        title: domData.metadata?.title || "",
-        domain: domData.metadata?.domain || "",
-        hasForm: domData.metadata?.hasForm || false,
-        hasCAPTCHA: domData.metadata?.hasCAPTCHA || false,
-        hasPaymentForm: domData.metadata?.hasPaymentForm || false,
-        elementCount: domData.metadata?.elementCount || 0,
+        title: domData.title,
+        domain: (() => { try { return new URL(domData.url).hostname; } catch { return ""; } })(),
+        hasForm: domData.forms.length > 0,
+        hasCAPTCHA: domData.metadata.hasCAPTCHA,
+        hasPaymentForm: domData.metadata.hasPaymentForm,
+        elementCount: domData.elements.length,
       },
     },
     redactionProof: {
@@ -495,83 +488,65 @@ function buildSanitizedContext(
   };
 }
 
-// ── Rule-Based Fallback Plan ─────────────────────────────────
+// ── Rule-Based Plan ──────────────────────────────────────────
 
 function generateRuleBasedPlan(
   taskDescription: string,
-  domData: any,
+  domData: PageState,
   dataContext?: Record<string, string>
 ): PlanResult {
-  const startTime = performance.now();
+  const t0 = performance.now();
   const steps: PlannedAction[] = [];
   let idx = 0;
-
   const lower = taskDescription.toLowerCase();
 
-  // Detect intent
   if (lower.includes("fill") || lower.includes("complete") || lower.includes("submit")) {
-    // Find unfilled required fields
-    const allFields = domData.forms.flatMap((f: any) => f.fields);
-    const unfilledRequired = allFields.filter(
-      (f: any) => f.required && !f.value
-    );
+    const allFields = domData.forms.flatMap((f) => f.fields);
+    const unfilled = allFields.filter((f) => !f.filledByUser && f.required);
 
-    for (const field of unfilledRequired) {
+    for (const field of unfilled) {
       const value = dataContext?.[field.name] || dataContext?.[field.label] || "";
+      const target = field.id || field.name || field.label;
 
       if (value) {
         steps.push({
           index: idx++,
-          action: {
-            id: `rule-${idx}`,
-            type: "click",
-            target: field.id || field.label || field.name,
-            retries: 0,
-            maxRetries: 3,
-          },
-          reasoning: `Click "${field.label || field.name}" to focus it`,
-          confidence: 0.8,
+          action: { id: `r-${idx}`, type: "click", target, retries: 0, maxRetries: 3 },
+          reasoning: `Focus "${field.label || field.name}"`,
+          confidence: 0.9,
           verification: "Field should be focused",
           risk: "low",
         });
-
         steps.push({
           index: idx++,
-          action: {
-            id: `rule-${idx}`,
-            type: "type",
-            target: field.id || field.label || field.name,
-            value,
-            retries: 0,
-            maxRetries: 3,
-          },
-          reasoning: `Type value into "${field.label || field.name}"`,
+          action: { id: `r-${idx}`, type: "type", target, value, retries: 0, maxRetries: 3 },
+          reasoning: `Type in "${field.label || field.name}"`,
+          confidence: 0.85,
+          verification: `Field should contain value`,
+          risk: "low",
+        });
+      } else if (field.options.length > 0) {
+        steps.push({
+          index: idx++,
+          action: { id: `r-${idx}`, type: "select", target, value: field.options[0] || "", retries: 0, maxRetries: 3 },
+          reasoning: `Select "${field.options[0]}" in "${field.label || field.name}"`,
           confidence: 0.7,
-          verification: "Field should contain typed value",
+          verification: "Option should be selected",
           risk: "low",
         });
       }
     }
   }
 
-  if (lower.includes("navigate") || lower.includes("go to") || lower.includes("open")) {
-    const urlMatch = taskDescription.match(/(?:https?:\/\/)?(?:www\.)?[\w.-]+\.\w+[\w/.?]*/);
-    if (urlMatch) {
-      steps.push({
-        index: idx++,
-        action: {
-          id: `rule-${idx}`,
-          type: "navigate",
-          value: urlMatch[0].startsWith("http") ? urlMatch[0] : `https://${urlMatch[0]}`,
-          retries: 0,
-          maxRetries: 1,
-        },
-        reasoning: `Navigate to ${urlMatch[0]}`,
-        confidence: 0.9,
-        verification: "URL should change",
-        risk: "low",
-      });
-    }
+  if (lower.includes("scroll")) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "scroll", value: lower.includes("up") ? "up" : "down", retries: 0, maxRetries: 1 },
+      reasoning: "Scroll page",
+      confidence: 0.9,
+      verification: "Page should scroll",
+      risk: "low",
+    });
   }
 
   return {
@@ -579,65 +554,40 @@ function generateRuleBasedPlan(
     steps,
     reasoning: steps.length > 0
       ? `Rule-based plan: ${steps.length} steps`
-      : "Could not determine actions from task description. Try being more specific.",
+      : "Could not determine actions. Try being more specific.",
     provider: "rule-based",
-    latencyMs: performance.now() - startTime,
+    latencyMs: performance.now() - t0,
   };
-}
-
-// ── DOM Redaction CSS Injection ──────────────────────────────
-
-let injectedStyleElement: HTMLStyleElement | null = null;
-
-function injectRedactionCSS(css: string): void {
-  // Remove previous injection
-  removeRedactionCSS();
-
-  if (!css.trim()) return;
-
-  injectedStyleElement = document.createElement("style");
-  injectedStyleElement.id = "vless-redaction";
-  injectedStyleElement.textContent = css;
-  document.head.appendChild(injectedStyleElement);
-}
-
-function removeRedactionCSS(): void {
-  if (injectedStyleElement) {
-    injectedStyleElement.remove();
-    injectedStyleElement = null;
-  }
-}
-
-// ── Privacy Proof ────────────────────────────────────────────
-
-function generatePrivacyProofDescription(proof: PrivacyProof): string {
-  const lines: string[] = [];
-
-  lines.push("🔒 PRIVACY PROOF");
-  lines.push(`PII detected: ${proof.sensitiveDataDetected} regions`);
-  lines.push(`PII redacted: ${proof.sensitiveDataRedacted} regions`);
-
-  lines.push("");
-  lines.push("Data sent to server:");
-  lines.push(`  ✅ Sanitized page structure (elements, labels, positions)`);
-  lines.push(`  ✅ Task description`);
-  lines.push(`  ${proof.dataSentToServer.rawScreenshot ? "❌" : "✅"} Raw screenshot: ${proof.dataSentToServer.rawScreenshot ? "SENT" : "NOT sent"}`);
-  lines.push(`  ${proof.dataSentToServer.formValues ? "❌" : "✅"} Form values: ${proof.dataSentToServer.formValues ? "SENT" : "NOT sent"}`);
-  lines.push(`  ${proof.dataSentToServer.piiText ? "❌" : "✅"} PII text: ${proof.dataSentToServer.piiText ? "SENT" : "NOT sent"}`);
-  lines.push(`  ${proof.dataSentToServer.faces ? "❌" : "✅"} Faces: ${proof.dataSentToServer.faces ? "SENT" : "NOT sent"}`);
-
-  lines.push("");
-  lines.push(proof.zeroOutboundPII
-    ? "✅ ZERO sensitive data left the device"
-    : "⚠️ Some sensitive data was transmitted");
-
-  return lines.join("\n");
 }
 
 // ── Utilities ────────────────────────────────────────────────
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function generatePrivacyProofDescription(proof: PrivacyProof): string {
+  const lines: string[] = [];
+  lines.push("PRIVACY PROOF");
+  lines.push(`PII detected: ${proof.sensitiveDataDetected} regions`);
+  lines.push(`PII redacted: ${proof.sensitiveDataRedacted} regions`);
+  lines.push("");
+  lines.push("Data sent to server:");
+  lines.push("  [OK] Sanitized page structure (elements, labels, positions)");
+  lines.push("  [OK] Task description");
+  lines.push(`  [${proof.dataSentToServer.rawScreenshot ? "FAIL" : "OK"}] Raw screenshot: ${proof.dataSentToServer.rawScreenshot ? "SENT" : "NOT sent"}`);
+  lines.push(`  [${proof.dataSentToServer.formValues ? "FAIL" : "OK"}] Form values: ${proof.dataSentToServer.formValues ? "SENT" : "NOT sent"}`);
+  lines.push(`  [${proof.dataSentToServer.piiText ? "FAIL" : "OK"}] PII text: ${proof.dataSentToServer.piiText ? "SENT" : "NOT sent"}`);
+  lines.push(`  [${proof.dataSentToServer.faces ? "FAIL" : "OK"}] Faces: ${proof.dataSentToServer.faces ? "SENT" : "NOT sent"}`);
+  lines.push("");
+  lines.push(proof.zeroOutboundPII
+    ? "ZERO sensitive data left the device"
+    : "WARNING: Some sensitive data was transmitted");
+  return lines.join("\n");
 }
 
 function buildErrorResult(
@@ -654,24 +604,17 @@ function buildErrorResult(
       regions: [],
       summary: {
         totalRegions: 0, criticalCount: 0, highCount: 0, mediumCount: 0, lowCount: 0,
-        byCategory: {} as any, bySource: { dom: 0, vision: 0, combined: 0 },
-        overallConfidence: 0, detectionTimeMs: 0,
+        byCategory: {} as any,
+        bySource: { dom: 0, vision: 0, combined: 0 },
+        overallConfidence: 0,
+        detectionTimeMs: 0,
       },
       sanitizedDOMMetadata: {
         safeElements: [], safeTextContent: "", safeForms: [],
         pageMetadata: { title: "", url: "", hasForm: false, hasCAPTCHA: false, elementCount: 0 },
       },
     },
-    redaction: {
-      redactedCanvas: document.createElement("canvas"),
-      redactionMap: [],
-      stats: {
-        totalRegions: 0, redactedRegions: 0, skippedRegions: 0,
-        pixelsAffected: 0, totalPixels: 0, redactionPercentage: 0,
-        strategyBreakdown: { blur: 0, black_box: 0, pixelate: 0, mask_text: 0, overlay: 0, none: 0 },
-        processingTimeMs: 0,
-      },
-    },
+    redactionSummary: { totalPII: 0, redacted: 0, cssInjected: false, overlayShown: false },
     planResult: { success: false, steps: [], reasoning: "", provider: "none", latencyMs: 0 },
     privacyProof: {
       sensitiveDataDetected: 0, sensitiveDataRedacted: 0,
@@ -681,29 +624,4 @@ function buildErrorResult(
     totalLatencyMs: performance.now() - startTime,
     error,
   };
-}
-
-// ── Event System ─────────────────────────────────────────────
-
-export function onPipelineStep(callback: (step: PipelineStep) => void): () => void {
-  if (currentPipeline) {
-    currentPipeline.listeners.push(callback);
-  }
-  return () => {
-    if (currentPipeline) {
-      currentPipeline.listeners = currentPipeline.listeners.filter((l) => l !== callback);
-    }
-  };
-}
-
-function notifyStep(step: PipelineStep): void {
-  if (currentPipeline) {
-    for (const listener of currentPipeline.listeners) {
-      try {
-        listener(step);
-      } catch {
-        // Listener error
-      }
-    }
-  }
 }

@@ -303,7 +303,15 @@ export type MessageType =
   | "GET_LLM_STATUS"
   | "GET_PRIVACY_STATS"
   | "EXECUTE_PIPELINE"
-  | "PIPELINE_COMPLETE";
+  | "PIPELINE_COMPLETE"
+  | "DO_CAPTURE_TAB"
+  | "CAPTURE_SCREENSHOT"
+  | "INJECT_REDACTION_CSS"
+  | "REMOVE_REDACTION_CSS"
+  | "SHOW_PII_OVERLAY"
+  | "HIDE_PII_OVERLAY"
+  | "SHOW_PIPELINE_PANEL"
+  | "UPDATE_PIPELINE_PANEL";
 
 export interface Message<T = unknown> {
   type: MessageType;

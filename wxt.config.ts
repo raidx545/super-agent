@@ -14,6 +14,7 @@ export default defineConfig({
       "storage",
       "sidePanel",
       "tabs",
+      "tabCapture",
       "webNavigation",
     ],
     host_permissions: ["<all_urls>"],

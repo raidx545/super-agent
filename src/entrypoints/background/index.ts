@@ -109,6 +109,8 @@ export default defineBackground({
           return getLLMStatus();
         case "GET_PRIVACY_STATS":
           return getStats();
+        case "DO_CAPTURE_TAB":
+          return handleCaptureTab();
         default:
           return { error: `Unknown message type: ${message.type}` };
       }
@@ -609,7 +611,7 @@ export default defineBackground({
       // Log the result
       log("analysis", `Pipeline complete: ${result.steps.length} steps, ` +
         `${result.piiDetection.summary.totalRegions} PII regions detected, ` +
-        `${result.redaction.stats.redactedRegions} redacted`
+        `${result.redactionSummary.redacted} redacted`
       );
 
       if (result.plan.length > 0) {
@@ -652,6 +654,78 @@ export default defineBackground({
 
     function sleep(ms: number): Promise<void> {
       return new Promise((r) => setTimeout(r, ms));
+    }
+
+    // ══════════════════════════════════════════════════════
+    // SCREENSHOT CAPTURE — via chrome.tabCapture
+    // Only works from service worker, not content script
+    // ══════════════════════════════════════════════════════
+
+    async function handleCaptureTab(): Promise<{
+      success: boolean;
+      dataUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+    }> {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          return { success: false, error: "No active tab" };
+        }
+
+        // Use chrome.tabCapture to capture the visible tab
+        const stream = await (chrome.tabCapture as any).capture({
+          video: true,
+          videoConstraints: {
+            mandatory: {
+              chromeMediaSource: "tab",
+              maxWidth: 1920,
+              maxHeight: 1080,
+            },
+          },
+        });
+
+        if (!stream) {
+          return { success: false, error: "Failed to capture tab" };
+        }
+
+        // Convert MediaStream to canvas to data URL
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.muted = true;
+
+        await new Promise<void>((resolve) => {
+          video.onloadedmetadata = () => {
+            video.play();
+            requestAnimationFrame(() => resolve());
+          };
+        });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(video, 0, 0);
+
+        // Stop the stream
+        stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        video.srcObject = null;
+
+        const dataUrl = canvas.toDataURL("image/png", 0.8);
+
+        return {
+          success: true,
+          dataUrl,
+          width: canvas.width,
+          height: canvas.height,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Capture failed",
+        };
+      }
     }
 
     function createEmptyPageState(): PageState {
