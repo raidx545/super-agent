@@ -434,10 +434,16 @@ export async function executePlanSteps(
 
 // ── Message Helpers ──────────────────────────────────────────
 
+function isRestrictedUrl(url?: string): boolean {
+  if (!url) return false;
+  return /^(chrome-extension:|chrome:|edge:|about:|brave:)/.test(url);
+}
+
 async function sendToContentScript(type: string, payload: unknown): Promise<any> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) return null;
+    if (isRestrictedUrl(tab.url)) return null;
 
     return chrome.tabs.sendMessage(tab.id, {
       type,

@@ -145,6 +145,16 @@ export default defineBackground({
 
       broadcast({ type: "TASK_STATUS", payload: task });
 
+      // Early check: is the active tab a restricted URL?
+      const activeTab = await getActiveTab();
+      if (activeTab?.url && isRestrictedUrl(activeTab.url)) {
+        task.status = "failed";
+        task.error = "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first.";
+        task.endTime = Date.now();
+        broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: true } });
+        return task;
+      }
+
       try {
         // ── PHASE 1: PERCEIVE ──────────────────────────
         log("discovery", "Scanning page...");
@@ -371,6 +381,10 @@ export default defineBackground({
         return createEmptyPageState();
       }
 
+      if (isRestrictedUrl(tab.url)) {
+        return createEmptyPageState();
+      }
+
       try {
         const response = await chrome.tabs.sendMessage(tab.id, {
           type: "PERCEIVE_PAGE",
@@ -415,6 +429,10 @@ export default defineBackground({
       const tab = await getActiveTab();
       if (!tab?.id) {
         return { success: false, error: "No active tab found" };
+      }
+
+      if (isRestrictedUrl(tab.url)) {
+        return { success: false, error: "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first." };
       }
 
       try {
@@ -603,6 +621,24 @@ export default defineBackground({
       tabId?: number;
     }): Promise<PipelineResult> {
       console.log(`🐾 [Pipeline] Starting: "${payload.description}"`);
+
+      // Early check: is the active tab a restricted URL?
+      const tab = await getActiveTab();
+      if (tab?.url && isRestrictedUrl(tab.url)) {
+        return {
+          success: false,
+          phase: "error",
+          steps: [],
+          plan: [],
+          piiDetection: { regions: [], summary: { totalRegions: 0, criticalCount: 0, highCount: 0, mediumCount: 0, lowCount: 0, byCategory: {} as any, bySource: { dom: 0, vision: 0, combined: 0 }, overallConfidence: 0, detectionTimeMs: 0 }, sanitizedDOMMetadata: { safeElements: [], safeTextContent: "", safeForms: [], pageMetadata: { title: "", url: "", hasForm: false, hasCAPTCHA: false, elementCount: 0 } } },
+          redactionSummary: { totalPII: 0, redacted: 0, cssInjected: false, overlayShown: false },
+          planResult: { success: false, steps: [], reasoning: "", provider: "none", latencyMs: 0 },
+          privacyProof: { sensitiveDataDetected: 0, sensitiveDataRedacted: 0, dataSentToServer: { rawScreenshot: false, formValues: false, piiText: false, faces: false, sanitizedStructure: false, taskDescription: false }, zeroOutboundPII: true, proofDescription: "" },
+          totalLatencyMs: 0,
+          error: "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first.",
+        };
+      }
+
       startMonitoring();
 
       const result = await executeFullPipeline({
@@ -645,6 +681,11 @@ export default defineBackground({
     // ══════════════════════════════════════════════════════
     // HELPERS
     // ══════════════════════════════════════════════════════
+
+    function isRestrictedUrl(url?: string): boolean {
+      if (!url) return false;
+      return /^(chrome-extension:|chrome:|edge:|about:|brave:)/.test(url);
+    }
 
     async function getActiveTab() {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
