@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
-    "fmt": "prettier --write src/"
+    "fmt": "prettier --write src/",
+    "models": "node scripts/download-models.mjs"
   },
   "dependencies": {
     "idb": "^8.0.0",

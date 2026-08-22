@@ -15,6 +15,7 @@ import type {
 import { checkOllamaAvailability, generatePlanWithLLM, isLLMAvailable, getLLMStatus } from "../../core/agent/llm-bridge";
 import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
+import { validateForm } from "../../core/agent/validator";
 
 export default defineBackground({
   persistent: false,
@@ -189,6 +190,31 @@ export default defineBackground({
         task.plan = plan;
         task.totalSteps = plan.steps.length;
         log("analysis", `Plan ready: ${plan.steps.length} steps, estimated ${((plan.estimatedTime) / 1000).toFixed(1)}s`);
+
+        // Step 2.5: Validate form data before execution
+        const allFormFields = pageState.forms.flatMap((f) => f.fields);
+        if (allFormFields.length > 0) {
+          const validation = validateForm(
+            allFormFields.map((f) => ({
+              name: f.name,
+              id: f.id,
+              label: f.label,
+              type: f.type,
+              value: f.value || payload.data?.[f.name] || payload.data?.[f.label] || "",
+              placeholder: "",
+              required: f.required,
+              maxLength: f.maxLength,
+              pattern: f.pattern,
+            }))
+          );
+
+          if (!validation.allValid) {
+            log("warning", `Form validation issues: ${validation.blockingIssues.join(", ")}`);
+            log("warning", `Risk level: ${validation.riskLevel}`);
+          } else if (allFormFields.some((f) => f.required)) {
+            log("success", `All ${allFormFields.filter((f) => f.required).length} required fields validated OK`);
+          }
+        }
 
         // Step 3: Execute
         task.status = "executing";
