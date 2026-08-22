@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { TaskInput } from "./TaskInput";
 import { ReasoningTrace } from "./ReasoningTrace";
-import { PageInspector } from "./PageInspector";
+
 import { LearningLog } from "./LearningLog";
 import { PrivacyMonitor } from "./PrivacyMonitor";
 import { VoiceControl } from "./VoiceControl";
+import { ModelManagerUI } from "./ModelManagerUI";
 import { Onboarding } from "./Onboarding";
 import { useKeyboardShortcuts, SHORTCUTS } from "../hooks/useKeyboardShortcuts";
 import type {
@@ -16,10 +17,11 @@ import type {
 
 // ── App State ────────────────────────────────────────────────
 
-type Tab = "task" | "debug" | "learn" | "privacy" | "voice" | "inspector" | "recipes" | "settings";
+type Tab = "task" | "models" | "learn" | "privacy" | "voice" | "debug";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "task", icon: "🎯", label: "Task" },
+  { id: "models", icon: "👁️", label: "Models" },
   { id: "learn", icon: "🧠", label: "Learn" },
   { id: "privacy", icon: "🔒", label: "Privacy" },
   { id: "voice", icon: "🎙️", label: "Voice" },
@@ -30,7 +32,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("task");
   const [task, setTask] = useState<AgentTask | null>(null);
   const [reasoningTrace, setReasoningTrace] = useState<ReasoningStep[]>([]);
-  const [pageState, setPageState] = useState<PageState | null>(null);
+  const [, _setPageState] = useState<PageState | null>(null);
   const [overlayActive, setOverlayActive] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -68,7 +70,7 @@ export function App() {
           }
           break;
         case "PAGE_STATE":
-          setPageState(message.payload);
+          _setPageState(message.payload);
           break;
       }
     };
@@ -113,7 +115,7 @@ export function App() {
         source: "sidepanel",
         timestamp: Date.now(),
       });
-      setPageState(response);
+      _setPageState(response);
     },
     onFocusInput: () => {
       setActiveTab("task");
@@ -143,14 +145,7 @@ export function App() {
     setTask(null);
   }, []);
 
-  const perceivePage = useCallback(async () => {
-    const response = await chrome.runtime.sendMessage({
-      type: "PERCEIVE_PAGE",
-      source: "sidepanel",
-      timestamp: Date.now(),
-    });
-    setPageState(response);
-  }, []);
+
 
   const toggleOverlay = useCallback(async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -257,17 +252,13 @@ export function App() {
             task={task}
           />
         )}
+        {activeTab === "models" && <ModelManagerUI />}
         {activeTab === "learn" && <LearningLog />}
         {activeTab === "privacy" && <PrivacyMonitor />}
         {activeTab === "voice" && <VoiceControl />}
         {activeTab === "debug" && (
           <ReasoningTrace steps={reasoningTrace} task={task} />
         )}
-        {activeTab === "inspector" && (
-          <PageInspector pageState={pageState} onRefresh={perceivePage} />
-        )}
-        {activeTab === "recipes" && <RecipesPanel />}
-        {activeTab === "settings" && <SettingsPanel />}
       </main>
 
       {/* Status Bar */}
@@ -318,146 +309,5 @@ function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
         </button>
       </div>
     </div>
-  );
-}
-
-// ── Recipes Panel ────────────────────────────────────────────
-
-function RecipesPanel() {
-  const [recipes, setRecipes] = useState<any[]>([]);
-  const [importMode, setImportMode] = useState(false);
-  const [importJson, setImportJson] = useState("");
-
-  useEffect(() => {
-    loadRecipes();
-  }, []);
-
-  async function loadRecipes() {
-    const { BUILTIN_RECIPES } = await import("../../core/agent/recipes");
-    setRecipes(BUILTIN_RECIPES);
-  }
-
-  return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-300">Automation Recipes</h2>
-        <button
-          onClick={() => setImportMode(!importMode)}
-          className="text-[10px] px-2 py-1 bg-gray-800 text-gray-400 hover:bg-gray-700 rounded transition-colors"
-        >
-          {importMode ? "Cancel" : "Import"}
-        </button>
-      </div>
-
-      {importMode && (
-        <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
-          <p className="text-[10px] text-gray-500 mb-2">Paste recipe JSON:</p>
-          <textarea
-            value={importJson}
-            onChange={(e) => setImportJson(e.target.value)}
-            className="w-full text-[11px] bg-gray-800 border border-gray-700 rounded p-2 text-gray-300 font-mono resize-none"
-            rows={4}
-            placeholder='{"name": "...", "steps": [...]}'
-          />
-          <button className="mt-2 text-[10px] px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-500">
-            Import Recipe
-          </button>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {recipes.map((recipe) => (
-          <div
-            key={recipe.id}
-            className="bg-gray-900 rounded-lg p-3 border border-gray-800 hover:border-gray-700 transition-colors cursor-pointer"
-          >
-            <div className="flex items-start justify-between mb-1">
-              <h3 className="text-xs font-medium text-gray-200">{recipe.name}</h3>
-              <span className="text-[9px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded">
-                {recipe.metadata.difficulty}
-              </span>
-            </div>
-            <p className="text-[10px] text-gray-500 mb-2">{recipe.description}</p>
-            <div className="flex items-center gap-3 text-[10px] text-gray-600">
-              <span>📝 {recipe.steps.length} steps</span>
-              <span>⏱️ ~{Math.round(recipe.metadata.estimatedTime / 1000)}s</span>
-              <span>🏷️ {recipe.tags.slice(0, 2).join(", ")}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Settings Panel ───────────────────────────────────────────
-
-function SettingsPanel() {
-  return (
-    <div className="p-4 space-y-4">
-      <h2 className="text-sm font-semibold text-gray-300">Settings</h2>
-
-      <div className="space-y-3">
-        <SettingToggle label="Auto-perceive on page load" defaultChecked />
-        <SettingToggle label="Confirm high-risk actions" defaultChecked />
-        <SettingToggle label="Show visual debug overlay" defaultChecked />
-        <SettingToggle label="Human-like typing delay" defaultChecked />
-        <SettingToggle label="Verbose logging" />
-        <SettingToggle label="Show onboarding on startup" />
-      </div>
-
-      <div className="pt-4 border-t border-gray-800">
-        <h3 className="text-xs font-semibold text-gray-400 mb-2">Privacy</h3>
-        <div className="text-[11px] text-gray-500 space-y-1">
-          <p>✅ All inference runs on-device</p>
-          <p>✅ Zero screenshots sent externally</p>
-          <p>✅ Memory stored locally (encrypted)</p>
-          <p>✅ No telemetry collected</p>
-        </div>
-      </div>
-
-      <div className="pt-4 border-t border-gray-800">
-        <h3 className="text-xs font-semibold text-gray-400 mb-2">Danger Zone</h3>
-        <button className="text-[11px] text-red-400 hover:text-red-300 px-3 py-1.5 border border-red-900 rounded-lg transition-colors">
-          Clear All Memory
-        </button>
-      </div>
-
-      <div className="pt-4 border-t border-gray-800">
-        <h3 className="text-xs font-semibold text-gray-400 mb-2">About</h3>
-        <p className="text-[11px] text-gray-500">
-          VLESS v0.1.0 — Privacy-preserving browser agent with on-device visual perception.
-          Built for SIH 2026.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function SettingToggle({
-  label,
-  defaultChecked = false,
-}: {
-  label: string;
-  defaultChecked?: boolean;
-}) {
-  const [checked, setChecked] = useState(defaultChecked);
-
-  return (
-    <label className="flex items-center justify-between cursor-pointer">
-      <span className="text-xs text-gray-300">{label}</span>
-      <div
-        onClick={() => setChecked(!checked)}
-        className={`relative w-9 h-5 rounded-full transition-colors ${
-          checked ? "bg-blue-600" : "bg-gray-700"
-        }`}
-      >
-        <div
-          className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-            checked ? "translate-x-4" : ""
-          }`}
-        />
-      </div>
-    </label>
   );
 }
