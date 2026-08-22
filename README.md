@@ -84,10 +84,10 @@ flowchart TB
     EXECUTE --> VERIFY
     VERIFY -->|"Retry on failure"| EXECUTE
 
-    style Client fill:#e8eaf6,stroke:#1a237e,stroke-width:2px
-    style Server fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style PII fill:#fff3e0,stroke:#e65100,stroke-width:1px
-    style RedactStrategies fill:#fce4ec,stroke:#c62828,stroke-width:1px
+    style Client fill:#e3e8f0,stroke:#455a7c,stroke-width:2px
+    style Server fill:#dceee7,stroke:#3a7c6e,stroke-width:2px
+    style PII fill:#f5ebe0,stroke:#8a6c42,stroke-width:1px
+    style RedactStrategies fill:#ede3e8,stroke:#8a5a72,stroke-width:1px
 ```
 
 ---
@@ -148,7 +148,7 @@ flowchart LR
     MASK --> APPLY
     PIXEL --> APPLY
 
-    style CRITICAL fill:#fff3e0,stroke:#e65100
+    style CRITICAL fill:#f5ebe0,stroke:#8a6c42,stroke-width:2px
 ```
 
 ### Step 4: Sanitization
@@ -211,8 +211,8 @@ flowchart TB
         RP["Redaction Proof"]
     end
 
-    style Blocked fill:#fce4ec,stroke:#c62828,stroke-width:2px
-    style Allowed fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style Blocked fill:#f0ddd8,stroke:#b05a4a,stroke-width:2px
+    style Allowed fill:#dceee7,stroke:#3a7c6e,stroke-width:2px
 ```
 
 ### Privacy Proof
