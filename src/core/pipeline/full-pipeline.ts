@@ -13,6 +13,7 @@
 import { detectAllPII, type PIIDetectionResult } from "../privacy/pii-detector";
 import { generateDOMRedactionCSS } from "../privacy/redaction-engine";
 import { initializeServer, isServerAvailable, getActiveProvider, type SanitizedContext, type PlanResult } from "../agent/server-bridge";
+import { generatePlanWithBestProvider, getBestAvailableProvider } from "../agent/llm-providers";
 import type { PlannedAction, PageState, Message } from "../../types";
 
 // ── Pipeline Types ───────────────────────────────────────────
@@ -274,6 +275,13 @@ export async function executeFullPipeline(
 
     const serverStep = addStep("init_server");
     await runStep(serverStep, async () => {
+      // Check multi-provider system first
+      const bestProvider = await getBestAvailableProvider();
+      if (bestProvider) {
+        serverStep.details = `${bestProvider.id} (${bestProvider.config.model})`;
+        return;
+      }
+      // Fallback to legacy server-bridge
       await initializeServer();
       if (isServerAvailable()) {
         const provider = getActiveProvider();
@@ -303,6 +311,16 @@ export async function executeFullPipeline(
 
     const planStep = addStep("get_plan");
     const planResultData = await runStep(planStep, async () => {
+      // Try multi-provider LLM first, then fallback to server-bridge, then rules
+      const llmResult = await generatePlanWithBestProvider(
+        input.taskDescription,
+        sanitizedContext,
+        input.dataContext
+      );
+      if (llmResult.success && llmResult.steps.length > 0) {
+        return llmResult;
+      }
+      // Fallback to legacy server-bridge
       if (isServerAvailable()) {
         const provider = getActiveProvider()!;
         return provider.generatePlan(

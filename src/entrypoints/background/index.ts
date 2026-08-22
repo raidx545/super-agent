@@ -26,6 +26,7 @@ import { log, narratePerception, narrateAction, narrateResult, narrateRetry, nar
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
 import { validateForm } from "../../core/agent/validator";
 import { executeFullPipeline, type PipelineResult } from "../../core/pipeline/full-pipeline";
+import { checkProviders } from "../../core/agent/llm-providers";
 
 export default defineBackground({
   persistent: false,
@@ -109,6 +110,8 @@ export default defineBackground({
           return getLLMStatus();
         case "GET_PRIVACY_STATS":
           return getStats();
+        case "CHECK_PROVIDERS":
+          return handleCheckProviders();
         case "DO_CAPTURE_TAB":
           return handleCaptureTab();
         default:
@@ -654,6 +657,19 @@ export default defineBackground({
 
     function sleep(ms: number): Promise<void> {
       return new Promise((r) => setTimeout(r, ms));
+    }
+
+    // ══════════════════════════════════════════════════════
+    // PROVIDER CHECK — Multi-provider LLM status
+    // ══════════════════════════════════════════════════════
+
+    async function handleCheckProviders() {
+      try {
+        const statuses = await checkProviders();
+        return { statuses };
+      } catch (error) {
+        return { statuses: [], error: error instanceof Error ? error.message : "Check failed" };
+      }
     }
 
     // ══════════════════════════════════════════════════════

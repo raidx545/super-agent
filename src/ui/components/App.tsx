@@ -6,6 +6,7 @@ import { LearningLog } from "./LearningLog";
 import { PrivacyMonitor } from "./PrivacyMonitor";
 import { VoiceControl } from "./VoiceControl";
 import { ModelManagerUI } from "./ModelManagerUI";
+import { ProviderSettings } from "./ProviderSettings";
 import { Onboarding } from "./Onboarding";
 import { useKeyboardShortcuts, SHORTCUTS } from "../hooks/useKeyboardShortcuts";
 import type {
@@ -17,15 +18,16 @@ import type {
 
 // ── App State ────────────────────────────────────────────────
 
-type Tab = "task" | "models" | "learn" | "privacy" | "voice" | "debug";
+type Tab = "task" | "ai" | "models" | "learn" | "privacy" | "voice" | "debug";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: "task", icon: "🎯", label: "Task" },
-  { id: "models", icon: "👁️", label: "Models" },
-  { id: "learn", icon: "🧠", label: "Learn" },
-  { id: "privacy", icon: "🔒", label: "Privacy" },
-  { id: "voice", icon: "🎙️", label: "Voice" },
-  { id: "debug", icon: "📋", label: "Debug" },
+  { id: "task", icon: "T", label: "Task" },
+  { id: "ai", icon: "L", label: "AI" },
+  { id: "models", icon: "M", label: "Models" },
+  { id: "learn", icon: "L", label: "Learn" },
+  { id: "privacy", icon: "P", label: "Privacy" },
+  { id: "voice", icon: "V", label: "Voice" },
+  { id: "debug", icon: "D", label: "Debug" },
 ];
 
 export function App() {
@@ -291,6 +293,7 @@ export function App() {
             task={task}
           />
         )}
+        {activeTab === "ai" && <ProviderSettings />}
         {activeTab === "models" && <ModelManagerUI />}
         {activeTab === "learn" && <LearningLog />}
         {activeTab === "privacy" && <PrivacyMonitor />}
