@@ -337,12 +337,24 @@ async function executeInPage(action: any): Promise<{ success: boolean; error?: s
 
   // ── Human-Like Typing ─────────────────────────────────
 
+  function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+    const prototype = Object.getPrototypeOf(el);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value") ||
+                       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value") ||
+                       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    if (descriptor?.set) {
+      descriptor.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+  }
+
   function humanType(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
     el.focus();
     el.scrollIntoView({ behavior: "smooth", block: "center" });
 
-    // Clear existing value
-    el.value = "";
+    // Clear existing value via native setter
+    setNativeValue(el, "");
     el.dispatchEvent(new Event("input", { bubbles: true }));
 
     // Type with realistic delays
@@ -363,8 +375,9 @@ async function executeInPage(action: any): Promise<{ success: boolean; error?: s
         bubbles: true, cancelable: true,
       }));
 
-      // Input
-      el.value += char;
+      // Input via native setter to trigger React/Vue state updates
+      const currentVal = el.value || "";
+      setNativeValue(el, currentVal + char);
       el.dispatchEvent(new InputEvent("input", {
         data: char, inputType: "insertText", bubbles: true, cancelable: true,
       }));

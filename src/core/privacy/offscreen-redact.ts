@@ -19,21 +19,11 @@ interface RedactRegion {
   strategy: "blur" | "black_box" | "pixelate" | "mask_text";
 }
 
-// ── Redaction ────────────────────────────────────────────────
-
-/**
- * Redact PII regions in a screenshot.
- * Runs in the offscreen document where OffscreenCanvas is available.
- *
- * Strategies:
- * - blur: Multi-pass box blur (Gaussian approximation)
- * - black_box: Solid black rectangle
- * - pixelate: Block averaging (mosaic effect)
- * - mask_text: N/A for canvas (handled by CSS in DOM)
- */
 export async function redactScreenshot(
   imageDataUrl: string,
-  regions: RedactRegion[]
+  regions: RedactRegion[],
+  viewportWidth?: number,
+  viewportHeight?: number
 ): Promise<{ imageDataUrl: string; regionsRedacted: number }> {
   // Decode the image
   const response = await fetch(imageDataUrl);
@@ -42,6 +32,10 @@ export async function redactScreenshot(
 
   const width = bitmap.width;
   const height = bitmap.height;
+
+  // Compute High-DPI / DevicePixelRatio scaling factors
+  const scaleX = viewportWidth && viewportWidth > 0 ? width / viewportWidth : 1;
+  const scaleY = viewportHeight && viewportHeight > 0 ? height / viewportHeight : 1;
 
   // Create canvas and draw original
   const canvas = new OffscreenCanvas(width, height);
@@ -52,10 +46,10 @@ export async function redactScreenshot(
   let regionsRedacted = 0;
 
   for (const region of regions) {
-    const x = Math.max(0, Math.round(region.x));
-    const y = Math.max(0, Math.round(region.y));
-    const w = Math.min(Math.round(region.width), width - x);
-    const h = Math.min(Math.round(region.height), height - y);
+    const x = Math.max(0, Math.round(region.x * scaleX));
+    const y = Math.max(0, Math.round(region.y * scaleY));
+    const w = Math.min(Math.round(region.width * scaleX), width - x);
+    const h = Math.min(Math.round(region.height * scaleY), height - y);
 
     if (w <= 0 || h <= 0) continue;
 
