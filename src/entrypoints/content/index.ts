@@ -20,55 +20,10 @@ export default defineContentScript({
     let overlayContainer: HTMLDivElement | null = null;
     let pipelinePanel: HTMLDivElement | null = null;
 
-    // ── Real-Time DOM Tracking (MutationObserver) ─────────
-    // Tracks DOM changes so the agent knows when the page updates
-    // after an action (e.g., form validation errors, new elements appear)
-
-    let lastDOMSnapshot = "";
-    let domChanged = false;
-    const domChangeCallbacks: Array<() => void> = [];
-
-    const domObserver = new MutationObserver((mutations) => {
-      // Only flag as changed if meaningful elements were added/removed/modified
-      const meaningful = mutations.some((m) => {
-        if (m.type === "childList") return m.addedNodes.length > 0 || m.removedNodes.length > 0;
-        if (m.type === "attributes") return m.attributeName === "class" || m.attributeName === "style" || m.attributeName === "value";
-        return false;
-      });
-      if (meaningful) {
-        domChanged = true;
-        domChangeCallbacks.forEach((cb) => cb());
-      }
-    });
-
-    // Start observing
-    domObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "style", "value", "disabled", "hidden"],
-    });
-
-    function waitForDOMChange(timeoutMs = 3000): Promise<boolean> {
-      return new Promise((resolve) => {
-        if (domChanged) {
-          domChanged = false;
-          resolve(true);
-          return;
-        }
-        const timer = setTimeout(() => {
-          domChangeCallbacks.splice(domChangeCallbacks.indexOf(cb), 1);
-          resolve(false);
-        }, timeoutMs);
-        const cb = () => {
-          clearTimeout(timer);
-          domChangeCallbacks.splice(domChangeCallbacks.indexOf(cb), 1);
-          domChanged = false;
-          resolve(true);
-        };
-        domChangeCallbacks.push(cb);
-      });
-    }
+    // NOTE: A DOM-settle primitive (wait for the page to stabilize after an
+    // action) lands in P6 with the execution loop, wired into action results.
+    // The previous MutationObserver scaffolding here was never consumed, so it
+    // was removed rather than left as dead weight.
 
     // ── Message Router ─────────────────────────────────────
 
@@ -886,8 +841,49 @@ export default defineContentScript({
     // HELPERS
     // ════════════════════════════════════════════════════════
 
+    // Cache of interactive elements for index-based lookup
+    // The LLM returns targets like [0], [1], [2] which map to
+    // the nth interactive element on the page.
+    let interactiveElementCache: Element[] | null = null;
+
+    function getInteractiveElements(): Element[] {
+      if (interactiveElementCache) return interactiveElementCache;
+      // Must match the selectors in extractPageState() exactly
+      // so LLM indices [0],[1],[2] resolve to the same elements
+      const SELECTORS = [
+        "a[href]", "button", "input", "select", "textarea",
+        '[role="button"]', '[role="link"]', '[role="tab"]',
+        '[role="checkbox"]', '[role="radio"]', '[role="switch"]',
+        '[role="combobox"]', '[contenteditable="true"]',
+        "[tabindex]",
+      ].join(", ");
+      const rawElements = document.querySelectorAll(SELECTORS);
+      const seen = new Set<Element>();
+      interactiveElementCache = [];
+      rawElements.forEach((el) => {
+        if (seen.has(el)) return;
+        seen.add(el);
+        if (!isVisible(el)) return;
+        interactiveElementCache!.push(el);
+      });
+      return interactiveElementCache;
+    }
+
     function findElement(target: string): Element | null {
       if (!target) return null;
+
+      // Strategy 0: Index-based lookup [0], [1], [2]...
+      // The LLM returns element indices from the page state.
+      const indexMatch = target.match(/^\[(\d+)\]$/);
+      if (indexMatch) {
+        const idx = parseInt(indexMatch[1], 10);
+        const elements = getInteractiveElements();
+        if (idx >= 0 && idx < elements.length) {
+          return elements[idx];
+        }
+        // If index is out of range, return null
+        return null;
+      }
 
       // Strategy 1: Direct ID
       const byId = document.getElementById(target);
