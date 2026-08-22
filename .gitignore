@@ -7,6 +7,9 @@ node_modules/
 .wxt/
 dist/
 
+# Downloaded models
+public/models/*.onnx
+
 # Desktop app
 desktop/node_modules/
 desktop/dist/

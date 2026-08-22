@@ -301,7 +301,9 @@ export type MessageType =
   | "TOGGLE_OVERLAY"
   | "CHECK_LLM"
   | "GET_LLM_STATUS"
-  | "GET_PRIVACY_STATS";
+  | "GET_PRIVACY_STATS"
+  | "EXECUTE_PIPELINE"
+  | "PIPELINE_COMPLETE";
 
 export interface Message<T = unknown> {
   type: MessageType;

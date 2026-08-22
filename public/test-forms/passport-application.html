@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Passport Application — Test Form</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a1a; }
+    .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 20px 0; }
+    .header-inner { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+    .header h1 { font-size: 22px; font-weight: 600; }
+    .header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+    .container { max-width: 800px; margin: 24px auto; padding: 0 24px; }
+    .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); padding: 24px; margin-bottom: 16px; }
+    .card h2 { font-size: 18px; margin-bottom: 16px; color: #1a237e; border-bottom: 2px solid #e8eaf6; padding-bottom: 8px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .form-row.full { grid-template-columns: 1fr; }
+    .form-group { display: flex; flex-direction: column; }
+    .form-group label { font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
+    .form-group label .required { color: #d32f2f; }
+    .form-group input, .form-group select, .form-group textarea {
+      padding: 10px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus, .form-group select:focus { border-color: #1a237e; outline: none; }
+    .form-group input[type="password"] { letter-spacing: 4px; }
+    .form-group .hint { font-size: 11px; color: #888; margin-top: 2px; }
+    .form-group.error input { border-color: #d32f2f; }
+    .form-group.error .error-msg { color: #d32f2f; font-size: 12px; margin-top: 2px; }
+    .btn-row { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
+    .btn { padding: 10px 24px; border: none; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    .btn-primary { background: #1a237e; color: white; }
+    .btn-primary:hover { background: #283593; }
+    .btn-secondary { background: #e8eaf6; color: #1a237e; }
+    .btn-secondary:hover { background: #c5cae9; }
+    .progress { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; padding: 12px 16px; background: #e8f5e9; border-radius: 4px; }
+    .progress .step { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #666; }
+    .progress .step.active { color: #1a237e; font-weight: 600; }
+    .progress .step.done { color: #2e7d32; }
+    .progress .step .num { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+    .progress .step.active .num { background: #1a237e; color: white; }
+    .progress .step.done .num { background: #2e7d32; color: white; }
+    .progress .step .num { background: #e0e0e0; color: #888; }
+    .progress .arrow { color: #ccc; }
+    .photo-upload { display: flex; align-items: center; gap: 16px; padding: 16px; border: 2px dashed #ccc; border-radius: 4px; cursor: pointer; }
+    .photo-upload:hover { border-color: #1a237e; }
+    .photo-upload .icon { font-size: 32px; }
+    .photo-upload .text { font-size: 13px; color: #666; }
+    .photo-upload .text strong { color: #1a237e; }
+    .security-note { padding: 12px 16px; background: #fff3e0; border-left: 4px solid #ff9800; border-radius: 0 4px 4px 0; margin-bottom: 16px; font-size: 13px; color: #e65100; }
+    .footer { text-align: center; padding: 24px; color: #888; font-size: 12px; }
+    @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <h1>Republic of India — Passport Application</h1>
+    <p>Online Passport Seva Application Form</p>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Progress -->
+  <div class="progress">
+    <div class="step done"><span class="num">✓</span> Registration</div>
+    <span class="arrow">→</span>
+    <div class="step active"><span class="num">2</span> Personal Details</div>
+    <span class="arrow">→</span>
+    <div class="step"><span class="num">3</span> Address</div>
+    <span class="arrow">→</span>
+    <div class="step"><span class="num">4</span> Documents</div>
+    <span class="arrow">→</span>
+    <div class="step"><span class="num">5</span> Payment</div>
+  </div>
+
+  <div class="security-note">
+    🔒 This is a test form for VLESS demo. No real data is submitted. All processing happens in your browser.
+  </div>
+
+  <form id="passportForm" action="/api/submit" method="POST">
+
+    <!-- Personal Details -->
+    <div class="card">
+      <h2>Personal Details</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Given Name <span class="required">*</span></label>
+          <input type="text" name="given_name" id="given_name" placeholder="e.g. Shashank" required maxlength="50">
+        </div>
+        <div class="form-group">
+          <label>Surname</label>
+          <input type="text" name="surname" id="surname" placeholder="e.g. Tomar">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Date of Birth <span class="required">*</span></label>
+          <input type="date" name="dob" id="dob" required>
+          <span class="hint">Format: DD/MM/YYYY</span>
+        </div>
+        <div class="form-group">
+          <label>Gender <span class="required">*</span></label>
+          <select name="gender" id="gender" required>
+            <option value="">-- Select --</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Father's Name <span class="required">*</span></label>
+          <input type="text" name="father_name" id="father_name" placeholder="Given Name + Surname" required>
+        </div>
+        <div class="form-group">
+          <label>Mother's Name</label>
+          <input type="text" name="mother_name" id="mother_name" placeholder="Given Name + Surname">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Marital Status <span class="required">*</span></label>
+          <select name="marital_status" id="marital_status" required>
+            <option value="">-- Select --</option>
+            <option value="single">Single</option>
+            <option value="married">Married</option>
+            <option value="divorced">Divorced</option>
+            <option value="widowed">Widowed</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Employment Type <span class="required">*</span></label>
+          <select name="employment" id="employment" required>
+            <option value="">-- Select --</option>
+            <option value="private">Private</option>
+            <option value="government">Government</option>
+            <option value="public_psu">Public PSU</option>
+            <option value="self_employed">Self Employed</option>
+            <option value="student">Student</option>
+            <option value="not_working">Not Working</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>ECNR (Emigration Check Not Required)</label>
+          <select name="ecnr" id="ecnr">
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Nationality <span class="required">*</span></label>
+          <select name="nationality" id="nationality" required>
+            <option value="indian" selected>Indian</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Identity Verification -->
+    <div class="card">
+      <h2>Identity Verification</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Aadhaar Number <span class="required">*</span></label>
+          <input type="text" name="aadhaar" id="aadhaar" placeholder="12-digit Aadhaar Number" required pattern="\d{12}" maxlength="12">
+          <span class="hint">12-digit UIDAI Aadhaar Number</span>
+        </div>
+        <div class="form-group">
+          <label>PAN Number</label>
+          <input type="text" name="pan" id="pan" placeholder="ABCDE1234F" pattern="[A-Z]{5}[0-9]{4}[A-Z]" maxlength="10">
+          <span class="hint">10-character PAN Card Number</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Mobile Number <span class="required">*</span></label>
+          <input type="tel" name="mobile" id="mobile" placeholder="+91 98765 43210" required maxlength="15">
+        </div>
+        <div class="form-group">
+          <label>Email Address <span class="required">*</span></label>
+          <input type="email" name="email" id="email" placeholder="you@example.com" required>
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Existing Passport Number (if any)</label>
+          <input type="text" name="existing_passport" id="existing_passport" placeholder="A1234567">
+        </div>
+      </div>
+    </div>
+
+    <!-- Address -->
+    <div class="card">
+      <h2>Present Address</h2>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>House No./Street/Locality <span class="required">*</span></label>
+          <input type="text" name="address_line1" id="address_line1" placeholder="House No., Street, Locality" required>
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Village/Town/City <span class="required">*</span></label>
+          <input type="text" name="city" id="city" placeholder="City or Town" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>State <span class="required">*</span></label>
+          <select name="state" id="state" required>
+            <option value="">-- Select State --</option>
+            <option value="andhra_pradesh">Andhra Pradesh</option>
+            <option value="delhi">Delhi</option>
+            <option value="goa">Goa</option>
+            <option value="gujarat">Gujarat</option>
+            <option value="karnataka">Karnataka</option>
+            <option value="kerala">Kerala</option>
+            <option value="madhya_pradesh">Madhya Pradesh</option>
+            <option value="maharashtra">Maharashtra</option>
+            <option value="punjab">Punjab</option>
+            <option value="rajasthan">Rajasthan</option>
+            <option value="tamil_nadu">Tamil Nadu</option>
+            <option value="telangana">Telangana</option>
+            <option value="uttar_pradesh">Uttar Pradesh</option>
+            <option value="west_bengal">West Bengal</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>PIN Code <span class="required">*</span></label>
+          <input type="text" name="pincode" id="pincode" placeholder="6-digit PIN Code" required pattern="\d{6}" maxlength="6">
+        </div>
+      </div>
+    </div>
+
+    <!-- Documents -->
+    <div class="card">
+      <h2>Document Upload</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Proof of Identity <span class="required">*</span></label>
+          <select name="identity_doc" id="identity_doc" required>
+            <option value="">-- Select Document --</option>
+            <option value="aadhaar">Aadhaar Card</option>
+            <option value="pan">PAN Card</option>
+            <option value="voter_id">Voter ID Card</option>
+            <option value="driving_license">Driving License</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Proof of Address <span class="required">*</span></label>
+          <select name="address_doc" id="address_doc" required>
+            <option value="">-- Select Document --</option>
+            <option value="aadhaar">Aadhaar Card</option>
+            <option value="utility_bill">Utility Bill</option>
+            <option value="bank_statement">Bank Statement</option>
+            <option value="rent_agreement">Rent Agreement</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Recent Photograph <span class="required">*</span></label>
+          <div class="photo-upload" id="photoUpload">
+            <span class="icon">📷</span>
+            <div class="text">
+              <strong>Click to upload</strong> or drag and drop<br>
+              JPEG, 3.5cm × 4.5cm, 50KB–1MB
+            </div>
+          </div>
+          <input type="file" name="photo" id="photo" accept="image/jpeg" hidden>
+        </div>
+        <div class="form-group">
+          <label>Signature <span class="required">*</span></label>
+          <div class="photo-upload" id="signatureUpload">
+            <span class="icon">✍️</span>
+            <div class="text">
+              <strong>Click to upload</strong> or drag and drop<br>
+              JPEG, 2cm × 5cm, 10KB–500KB
+            </div>
+          </div>
+          <input type="file" name="signature" id="signature" accept="image/jpeg" hidden>
+        </div>
+      </div>
+    </div>
+
+    <!-- Declaration -->
+    <div class="card">
+      <h2>Declaration</h2>
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label style="display: flex; gap: 8px; font-weight: normal; cursor: pointer;">
+          <input type="checkbox" name="declaration" id="declaration" required style="margin-top: 2px;">
+          <span>I hereby declare that all information provided above is true and correct to the best of my knowledge. I understand that any false information may result in rejection of my application or cancellation of the passport.</span>
+        </label>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Place <span class="required">*</span></label>
+          <input type="text" name="place" id="place" placeholder="City/Village" required>
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" name="date" id="date">
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <div class="btn-row">
+      <button type="button" class="btn btn-secondary" onclick="alert('Draft saved!')">Save as Draft</button>
+      <button type="submit" class="btn btn-primary">Preview Application</button>
+    </div>
+  </form>
+</div>
+
+<div class="footer">
+  <p>Passport Seva Test Form — Built for VLESS Demo | No real data is collected or submitted</p>
+</div>
+
+<script>
+  // Photo upload handlers
+  document.getElementById('photoUpload')?.addEventListener('click', () => {
+    document.getElementById('photo')?.click();
+  });
+  document.getElementById('signatureUpload')?.addEventListener('click', () => {
+    document.getElementById('signature')?.click();
+  });
+
+  // Form submission handler (prevent real submission)
+  document.getElementById('passportForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    alert('✅ Form validation passed!\n\nThis is a VLESS demo — no data was submitted to any server.\nAll processing happened locally in your browser.');
+  });
+
+  // Auto-fill date field
+  const dateField = document.getElementById('date');
+  if (dateField) {
+    const today = new Date().toISOString().split('T')[0];
+    dateField.value = today;
+  }
+</script>
+
+</body>
+</html>

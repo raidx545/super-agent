@@ -8,7 +8,18 @@
 // License: Apache 2.0
 // ============================================================
 
-import * as ort from "onnxruntime-web";
+// Lazy-load ONNX Runtime — only loaded when models are downloaded
+// This keeps the extension at ~600KB until vision models are needed
+import type { InferenceSession } from "onnxruntime-web";
+
+let ort: typeof import("onnxruntime-web") | null = null;
+
+async function loadOrt(): Promise<typeof import("onnxruntime-web")> {
+  if (!ort) {
+    ort = await import("onnxruntime-web");
+  }
+  return ort;
+}
 
 // ── Model Registry ───────────────────────────────────────────
 
@@ -73,7 +84,7 @@ export const MODEL_REGISTRY: ModelInfo[] = [
 // ── Model Manager Class ──────────────────────────────────────
 
 export class ModelManager {
-  private sessions: Map<string, ort.InferenceSession> = new Map();
+  private sessions: Map<string, InferenceSession> = new Map();
   private cacheName = "vless-models-v2";
   private backend: "webgpu" | "wasm" = "wasm";
   private progressCallbacks: Map<string, (progress: ModelProgress) => void> = new Map();
@@ -129,7 +140,7 @@ export class ModelManager {
   async loadModel(
     modelId: string,
     onProgress?: (progress: ModelProgress) => void
-  ): Promise<ort.InferenceSession> {
+  ): Promise<InferenceSession> {
     // Already loaded
     if (this.sessions.has(modelId)) {
       return this.sessions.get(modelId)!;
@@ -213,7 +224,7 @@ export class ModelManager {
   /**
    * Get a loaded session.
    */
-  getSession(modelId: string): ort.InferenceSession | undefined {
+  getSession(modelId: string): InferenceSession | undefined {
     return this.sessions.get(modelId);
   }
 
@@ -281,13 +292,14 @@ export class ModelManager {
     return result.buffer;
   }
 
-  private async createSession(modelBytes: ArrayBuffer): Promise<ort.InferenceSession> {
-    const options: ort.InferenceSession.SessionOptions = {
+  private async createSession(modelBytes: ArrayBuffer): Promise<InferenceSession> {
+    const ortModule = await loadOrt();
+    const options: InferenceSession.SessionOptions = {
       executionProviders: [this.backend],
       graphOptimizationLevel: "all",
     };
 
-    return ort.InferenceSession.create(modelBytes, options);
+    return ortModule.InferenceSession.create(modelBytes, options);
   }
 
   private async isCached(modelId: string): Promise<boolean> {

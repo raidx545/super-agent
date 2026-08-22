@@ -25,6 +25,7 @@ import { checkOllamaAvailability, generatePlanWithLLM, isLLMAvailable, getLLMSta
 import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
 import { validateForm } from "../../core/agent/validator";
+import { executeFullPipeline, type PipelineResult } from "../../core/pipeline/full-pipeline";
 
 export default defineBackground({
   persistent: false,
@@ -85,6 +86,10 @@ export default defineBackground({
         case "START_TASK":
           return handleStartTask(
             message.payload as { description: string; data?: Record<string, string> }
+          );
+        case "EXECUTE_PIPELINE":
+          return handleExecutePipeline(
+            message.payload as { description: string; data?: Record<string, string>; tabId?: number }
           );
         case "CANCEL_TASK":
           return { success: true, message: "Task cancelled" };
@@ -581,6 +586,42 @@ export default defineBackground({
         requiresConfirmation: false,
         dataMappings: [],
       };
+    }
+
+    // ══════════════════════════════════════════════════════
+    // FULL PIPELINE — PII Detection + Redaction + Planning
+    // ══════════════════════════════════════════════════════
+
+    async function handleExecutePipeline(payload: {
+      description: string;
+      data?: Record<string, string>;
+      tabId?: number;
+    }): Promise<PipelineResult> {
+      console.log(`🐾 [Pipeline] Starting: "${payload.description}"`);
+      startMonitoring();
+
+      const result = await executeFullPipeline({
+        taskDescription: payload.description,
+        dataContext: payload.data,
+        tabId: payload.tabId,
+      });
+
+      // Log the result
+      log("analysis", `Pipeline complete: ${result.steps.length} steps, ` +
+        `${result.piiDetection.summary.totalRegions} PII regions detected, ` +
+        `${result.redaction.stats.redactedRegions} redacted`
+      );
+
+      if (result.plan.length > 0) {
+        log("success", `Action plan: ${result.plan.length} steps from ${result.planResult.provider}`);
+      } else {
+        log("warning", "No action plan generated");
+      }
+
+      // Broadcast pipeline result to side panel
+      broadcast({ type: "PIPELINE_COMPLETE", payload: result });
+
+      return result;
     }
 
     // ══════════════════════════════════════════════════════
