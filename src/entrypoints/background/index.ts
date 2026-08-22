@@ -385,7 +385,7 @@ export default defineBackground({
         try {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            files: ["content.js"],
+            files: ["content-scripts/content.js"],
           });
           await sleep(200);
 
@@ -432,7 +432,7 @@ export default defineBackground({
         try {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            files: ["content.js"],
+            files: ["content-scripts/content.js"],
           });
           await sleep(300);
 

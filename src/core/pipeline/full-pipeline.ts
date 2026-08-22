@@ -453,7 +453,7 @@ async function sendToContentScript(type: string, payload: unknown): Promise<any>
 
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ["content.js"],
+        files: ["content-scripts/content.js"],
       });
       await sleep(200);
 
