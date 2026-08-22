@@ -8,6 +8,7 @@
 // ============================================================
 
 import type { SanitizedContext, PlanResult } from "./server-bridge";
+import type { PlannedAction } from "../../types";
 
 // ── Provider Configuration Types ────────────────────────────
 
@@ -151,36 +152,24 @@ function buildPlanningPrompt(
         .join("\n")}`
     : "";
 
-  const system = `You are VLESS, a privacy-preserving browser automation agent.
+  const system = `You are VLESS, a browser automation agent. You analyze web pages and produce action plans.
 
-Your job: analyze the sanitized page structure and produce a JSON action plan.
+RESPOND WITH ONLY VALID JSON. No markdown. No code fences. No explanation outside the JSON.
 
-CRITICAL PRIVACY RULES:
-- You NEVER see raw screenshots, PII values, faces, or passwords.
-- You only see sanitized element labels, types, and positions.
-- Fields marked [PII:category] are sensitive — do NOT ask for their values.
-- The client fills PII fields using local data — your plan references them by label only.
+The JSON must have exactly this structure:
+{"reasoning":"...","steps":[{"action":{"type":"click","target":"[0]"},"confidence":0.9,"risk":"low"}]}
 
-RESPONSE FORMAT (strict JSON):
-{
-  "reasoning": "Your analysis of the page and approach",
-  "steps": [
-    {
-      "action": { "type": "click|type|scroll|select|wait", "target": "element label or [index]", "value": "if typing" },
-      "reasoning": "Why this step",
-      "confidence": 0.0-1.0,
-      "risk": "low|medium|high"
-    }
-  ],
-  "riskLevel": "low|medium|high"
-}
+Action types: click, type, scroll, select, wait
+For type actions add "value": "text to type"
+For select actions add "value": "option text"
+For scroll actions add "value": "up" or "down"
 
-RULES:
-- Use [index] to reference elements from the page state
-- For form filling: click field first, then type value
-- For PII fields: use the label — client resolves the actual value
+IMPORTANT RULES:
+- Use [0], [1], [2] etc. as targets — these are element indices from the page state
+- For form filling: click the field [index] first, then type [index] with value
+- Fields marked [PII:category] are sensitive — reference them by index only
 - Max 20 steps
-- Mark destructive actions (submit, delete, pay) as high risk`;
+- Mark destructive actions (submit, delete) as risk high`;
 
   const user = `TASK: "${taskDescription}"
 
@@ -209,33 +198,51 @@ Generate the action plan as JSON.`;
 // ── Response Parsing ────────────────────────────────────────
 
 function parsePlanResponse(response: string): {
-  steps: PlanResult["steps"];
+  steps: PlannedAction[];
   reasoning: string;
 } {
-  const jsonMatch = response.match(/\{[\s\S]*\}/);
+  // Strip markdown code fences if present
+  const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     return { steps: [], reasoning: "No JSON found in response" };
   }
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
-    const steps: PlanResult["steps"] = (parsed.steps || []).map(
+    // Handle both "steps" and "actions" keys
+    const rawSteps = parsed.steps || parsed.actions || [];
+    const steps: PlannedAction[] = rawSteps.map(
       (step: Record<string, unknown>, i: number) => {
+        // Handle nested action object or flat step
         const action = (step.action || step) as Record<string, unknown>;
+        // Normalize target: extract index from "[0]" format
+        let target = (action.target || action.element || "") as string;
+        // Normalize: extract bracket index from strings like "[0] Given Name"
+        const bracketMatch = target.match(/\[(\d+)\]/);
+        if (bracketMatch) {
+          target = "[" + bracketMatch[1] + "]";
+        }
+        // Normalize action type
+        let actionType = (action.type || "wait") as string;
+        if (actionType === "fill") actionType = "type";
+        if (actionType === "input") actionType = "type";
+
         return {
           index: i,
           action: {
             id: `llm-action-${i}`,
-            type: action.type || "wait",
-            target: action.target,
+            type: actionType,
+            target,
             value: action.value,
             retries: 0,
             maxRetries: 3,
           },
           reasoning: step.reasoning || "LLM-planned step",
-          confidence: step.confidence || 0.8,
+          confidence: (step.confidence as number) || 0.8,
           verification: "Check page state after action",
-          risk: step.risk || "low",
+          risk: (step.risk as "low" | "medium" | "high") || "low",
         };
       }
     );
