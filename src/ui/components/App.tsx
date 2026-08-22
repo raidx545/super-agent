@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { TaskInput } from "./TaskInput";
 import { ReasoningTrace } from "./ReasoningTrace";
 import { PageInspector } from "./PageInspector";
+import { LearningLog } from "./LearningLog";
+import { PrivacyMonitor } from "./PrivacyMonitor";
+import { VoiceControl } from "./VoiceControl";
 import { Onboarding } from "./Onboarding";
 import { useKeyboardShortcuts, SHORTCUTS } from "../hooks/useKeyboardShortcuts";
 import type {
@@ -13,14 +16,14 @@ import type {
 
 // ── App State ────────────────────────────────────────────────
 
-type Tab = "task" | "debug" | "inspector" | "recipes" | "settings";
+type Tab = "task" | "debug" | "learn" | "privacy" | "voice" | "inspector" | "recipes" | "settings";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "task", icon: "🎯", label: "Task" },
-  { id: "debug", icon: "🧠", label: "Debug" },
-  { id: "inspector", icon: "🔍", label: "Inspect" },
-  { id: "recipes", icon: "📋", label: "Recipes" },
-  { id: "settings", icon: "⚙️", label: "Settings" },
+  { id: "learn", icon: "🧠", label: "Learn" },
+  { id: "privacy", icon: "🔒", label: "Privacy" },
+  { id: "voice", icon: "🎙️", label: "Voice" },
+  { id: "debug", icon: "📋", label: "Debug" },
 ];
 
 export function App() {
@@ -254,6 +257,9 @@ export function App() {
             task={task}
           />
         )}
+        {activeTab === "learn" && <LearningLog />}
+        {activeTab === "privacy" && <PrivacyMonitor />}
+        {activeTab === "voice" && <VoiceControl />}
         {activeTab === "debug" && (
           <ReasoningTrace steps={reasoningTrace} task={task} />
         )}
