@@ -811,6 +811,7 @@ export default defineBackground({
           redactionSummary: { totalPII: 0, redacted: 0, cssInjected: false, overlayShown: false },
           planResult: { success: false, steps: [], reasoning: "", provider: "none", latencyMs: 0 },
           privacyProof: { sensitiveDataDetected: 0, sensitiveDataRedacted: 0, dataSentToServer: { rawScreenshot: false, formValues: false, piiText: false, faces: false, sanitizedStructure: false, taskDescription: false }, zeroOutboundPII: true, proofDescription: "" },
+          reasoningTrace: null,
           totalLatencyMs: 0,
           error: "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first.",
         };

@@ -15,6 +15,10 @@ import { generateDOMRedactionCSS } from "../privacy/redaction-engine";
 import { initializeServer, isServerAvailable, getActiveProvider, type SanitizedContext, type PlanResult } from "../agent/server-bridge";
 import { callOffscreen } from "../runtime/messaging";
 import type { OcrResult } from "../../types/runtime";
+import {
+  startTrace, traceObserve, tracePIIDetection, traceRedaction,
+  traceRedactionVerification, tracePlan, completeTrace, type ReasoningTrace,
+} from "../agent/reasoning-trace";
 import { generatePlanWithBestProvider, getBestAvailableProvider } from "../agent/llm-providers";
 import type { PlannedAction, PageState, Message } from "../../types";
 
@@ -35,6 +39,7 @@ export interface PipelineResult {
   redactionSummary: RedactionSummary;
   planResult: PlanResult;
   privacyProof: PrivacyProof;
+  reasoningTrace: ReasoningTrace | null;
   totalLatencyMs: number;
   error?: string;
 }
@@ -78,6 +83,10 @@ export async function executeFullPipeline(
 
   const startTime = performance.now();
   const steps: PipelineStep[] = [];
+
+  // Start the reasoning trace for this pipeline run
+  startTrace(`pipeline-${Date.now()}`, input.taskDescription);
+  traceObserve(`Pipeline started: "${input.taskDescription}"`);
 
   const addStep = (name: string): PipelineStep => {
     const step: PipelineStep = { name, status: "pending", latencyMs: 0, details: "" };
@@ -215,6 +224,13 @@ export async function executeFullPipeline(
       detectStep.details = `${detectionResult.summary.totalRegions} PII regions ` +
         `(${detectionResult.summary.criticalCount} critical, ${detectionResult.summary.highCount} high)`;
       privacyProof.sensitiveDataDetected = detectionResult.summary.totalRegions;
+      // Trace: PII detection results
+      tracePIIDetection(
+        detectionResult.summary.totalRegions,
+        detectionResult.summary.criticalCount,
+        detectionResult.summary.highCount,
+        detectionResult.summary.byCategory as Record<string, number>
+      );
     }
 
     // ════════════════════════════════════════════════════════
@@ -273,6 +289,11 @@ export async function executeFullPipeline(
       ).length;
       privacyProof.sensitiveDataRedacted = redactionSummary.redacted;
       redactStep.details = `${redactionSummary.redacted} regions redacted`;
+      // Trace: redaction results
+      traceRedaction(
+        redactionSummary.redacted,
+        piiDetection.regions.map((r) => r.redactionStrategy)
+      );
     }
 
     // ════════════════════════════════════════════════════════
@@ -299,6 +320,8 @@ export async function executeFullPipeline(
         verifyStep.details = verifyResult.passed
           ? `✅ Verified: 0 PII in pixels (${verifyResult.timings.ocr.toFixed(0)}ms)`
           : `❌ ${verifyResult.piiTextFound} PII regions residual`;
+        // Trace: redaction verification
+        traceRedactionVerification(verifyResult.passed, verifyResult.piiTextFound, verifyResult.timings.ocr);
       }
     }
 
@@ -370,6 +393,13 @@ export async function executeFullPipeline(
     if (planResultData) {
       planResult = planResultData;
       planStep.details = `${planResult.steps.length} steps (${planResult.provider})`;
+      // Trace: planning results
+      tracePlan(
+        planResult.steps.length,
+        planResult.provider,
+        planResult.reasoning,
+        planResult.latencyMs
+      );
     }
 
     // ════════════════════════════════════════════════════════
@@ -412,6 +442,8 @@ export async function executeFullPipeline(
 
     const totalLatency = performance.now() - startTime;
 
+    // Complete the reasoning trace
+    const completedTrace = completeTrace(true);
 
     return {
       success: planResult.success || planResult.steps.length > 0,
@@ -422,6 +454,7 @@ export async function executeFullPipeline(
       redactionSummary,
       planResult,
       privacyProof,
+      reasoningTrace: completedTrace,
       totalLatencyMs: totalLatency,
     };
   } catch (error) {
@@ -854,6 +887,7 @@ function buildErrorResult(
       dataSentToServer: { rawScreenshot: false, formValues: false, piiText: false, faces: false, sanitizedStructure: false, taskDescription: false },
       zeroOutboundPII: true, proofDescription: "",
     },
+    reasoningTrace: null,
     totalLatencyMs: performance.now() - startTime,
     error,
   };
