@@ -621,6 +621,89 @@ function generateRuleBasedPlan(
     });
   }
 
+  // Click specific element
+  const clickMatch = lower.match(/(?:click|press|tap)\s+(?:on\s+)?["']?([^"']+)["']?/);
+  if (clickMatch) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "click", target: clickMatch[1].trim(), retries: 0, maxRetries: 3 },
+      reasoning: `Click "${clickMatch[1].trim()}"`,
+      confidence: 0.8,
+      verification: "Element should respond",
+      risk: "low",
+    });
+  }
+
+  // Search on a site: "search X on youtube", "find X on google"
+  const searchMatch = lower.match(/(?:search|find|look up|search for)\s+(.+?)\s+(?:on|in|at)\s+(\S+)/);
+  if (searchMatch) {
+    const query = searchMatch[1].trim();
+    const site = searchMatch[2].trim();
+    const siteUrls: Record<string, string> = {
+      youtube: "https://www.youtube.com",
+      google: "https://www.google.com",
+      bing: "https://www.bing.com",
+      amazon: "https://www.amazon.in",
+      flipkart: "https://www.flipkart.com",
+      github: "https://github.com",
+    };
+    const baseUrl = siteUrls[site] || `https://www.${site}.com`;
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "navigate", value: baseUrl, retries: 0, maxRetries: 1 },
+      reasoning: `Navigate to ${site}`,
+      confidence: 0.9,
+      verification: "URL should change",
+      risk: "medium",
+    });
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "type", target: "search", value: query, retries: 0, maxRetries: 3 },
+      reasoning: `Search for "${query}" on ${site}`,
+      confidence: 0.85,
+      verification: "Search results should appear",
+      risk: "low",
+    });
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "press_key", key: "Enter", retries: 0, maxRetries: 1 },
+      reasoning: "Submit search",
+      confidence: 0.9,
+      verification: "Page should show results",
+      risk: "low",
+    });
+  }
+
+  // Open a site by name: "open youtube", "go to google"
+  const siteMatch = lower.match(/(?:go to|open|navigate to|visit)\s+(\S+)$/);
+  if (siteMatch && steps.length === 0) {
+    const site = siteMatch[1].replace(/[^a-z0-9.]/g, "");
+    const siteUrls: Record<string, string> = {
+      youtube: "https://www.youtube.com",
+      google: "https://www.google.com",
+      bing: "https://www.bing.com",
+      amazon: "https://www.amazon.in",
+      flipkart: "https://www.flipkart.com",
+      github: "https://github.com",
+    };
+    let url = siteUrls[site];
+    if (!url) {
+      if (site.includes(".") || /^(com|org|net|in|io|dev)$/.test(site)) {
+        url = site.startsWith("http") ? site : `https://${site}`;
+      } else {
+        url = `https://www.${site}.com`;
+      }
+    }
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "navigate", value: url, retries: 0, maxRetries: 1 },
+      reasoning: `Navigate to "${url}"`,
+      confidence: 0.9,
+      verification: "URL should change",
+      risk: "medium",
+    });
+  }
+
   return {
     success: steps.length > 0,
     steps,
