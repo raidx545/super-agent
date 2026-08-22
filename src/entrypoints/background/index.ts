@@ -192,7 +192,7 @@ export default defineBackground({
             plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
           }
         } else {
-          log("analysis", "📋 Using rule-based planning (Ollama not available)");
+          log("warning", "⚠️ No AI provider available — using limited rule-based planning. Configure an AI provider in Settings for full capability.");
           plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
         }
 

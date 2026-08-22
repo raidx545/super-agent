@@ -329,6 +329,8 @@ export async function executeFullPipeline(
           input.dataContext
         );
       }
+      // Last resort: rule-based (limited to fill/scroll/click/navigate)
+      console.warn("[VLESS] No LLM available — falling back to rule-based planning. Configure an AI provider in Settings for full capability.");
       return generateRuleBasedPlan(input.taskDescription, domData, input.dataContext);
     });
 

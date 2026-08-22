@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 interface OnboardingProps {
-  onComplete: () => void;
+  onComplete: (openSettings?: boolean) => void;
 }
 
 const STEPS = [
@@ -21,9 +21,9 @@ const STEPS = [
   },
   {
     icon: "🧠",
-    title: "Smart Agent",
+    title: "Connect an AI Provider",
     description:
-      "Describe what you want in natural language. The agent plans, executes, and verifies every action. If something goes wrong, it retries automatically.",
+      "VLESS needs an LLM to understand your requests. Choose one:\n\n• Ollama (free, local) — install Ollama + pull qwen2.5:1.5b\n• Claude / OpenAI / OpenRouter — paste your API key\n\nTakes 30 seconds. Without this, only basic rules work.",
     color: "from-purple-600 to-pink-600",
   },
   {
@@ -37,7 +37,7 @@ const STEPS = [
     icon: "⚡",
     title: "Ready to Go",
     description:
-      "Click the extension icon to open the side panel. Describe a task and watch the agent work. Try: 'Fill the form with my data'.",
+      "Click the extension icon to open the side panel. Describe any task in natural language and the AI will plan and execute it. Try: 'Fill this form with my data'.",
     color: "from-cyan-600 to-blue-600",
   },
 ];
@@ -52,7 +52,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   const handleNext = () => {
     if (isLast) {
       setIsExiting(true);
-      setTimeout(onComplete, 300);
+      setTimeout(() => onComplete(true), 300);
     } else {
       setCurrentStep((s) => s + 1);
     }

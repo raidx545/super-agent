@@ -39,8 +39,9 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [historyPosition, _setHistoryPosition] = useState({ current: 0, total: 0 });
+  const [llmStatus, setLlmStatus] = useState<{ available: boolean; provider?: string; model?: string }>({ available: false });
 
-  // ── Check First Visit ────────────────────────────────────
+  // ── Check First Visit & LLM Status ───────────────────────
 
   useEffect(() => {
     chrome.storage.local.get("onboardingComplete", (result) => {
@@ -48,11 +49,36 @@ export function App() {
         setShowOnboarding(true);
       }
     });
+
+    // Check if any LLM provider is available
+    const checkLLM = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "CHECK_PROVIDERS",
+          source: "sidepanel",
+          timestamp: Date.now(),
+        });
+        if (response?.statuses) {
+          const active = response.statuses.find((s: { available: boolean }) => s.available);
+          if (active) {
+            setLlmStatus({ available: true, provider: active.name, model: active.model });
+          } else {
+            setLlmStatus({ available: false });
+          }
+        }
+      } catch {
+        setLlmStatus({ available: false });
+      }
+    };
+    checkLLM();
   }, []);
 
-  const handleOnboardingComplete = useCallback(() => {
+  const handleOnboardingComplete = useCallback((openSettings?: boolean) => {
     setShowOnboarding(false);
     chrome.storage.local.set({ onboardingComplete: true });
+    if (openSettings) {
+      setActiveTab("ai");
+    }
   }, []);
 
   // ── Message Handling ─────────────────────────────────────
@@ -264,6 +290,27 @@ export function App() {
       {/* Keyboard Shortcuts Overlay */}
       {showShortcuts && (
         <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {/* LLM Status Warning */}
+      {!llmStatus.available && !showOnboarding && (
+        <div className="px-4 py-2.5 bg-amber-950/40 border-b border-amber-800/40">
+          <div className="flex items-start gap-2">
+            <span className="text-amber-400 text-sm mt-0.5">⚠️</span>
+            <div className="flex-1">
+              <p className="text-[11px] font-medium text-amber-300">No AI provider configured</p>
+              <p className="text-[10px] text-amber-400/70 mt-0.5">
+                The agent needs an LLM to understand your requests. Configure one in the AI tab — it takes 30 seconds.
+              </p>
+              <button
+                onClick={() => setActiveTab("ai")}
+                className="mt-1.5 text-[10px] px-2 py-1 bg-amber-800/40 text-amber-300 hover:bg-amber-700/40 rounded transition-colors"
+              >
+                Set up AI provider →
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Tab Navigation */}
