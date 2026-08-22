@@ -15,7 +15,9 @@ export default defineConfig({
       "sidePanel",
       "tabs",
       "tabCapture",
+      "offscreen",
       "webNavigation",
+      "alarms",
     ],
     host_permissions: ["<all_urls>"],
     side_panel: {
