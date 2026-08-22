@@ -238,6 +238,7 @@ export async function executeFullPipeline(
     // ════════════════════════════════════════════════════════
 
     const redactStep = addStep("redact");
+    let redactedScreenshotUrl: string | null = null;
     const redactResult = await runStep(redactStep, async () => {
       // Inject redaction CSS into the page
       const css = generateDOMRedactionCSS(piiDetection.regions);
@@ -265,17 +266,30 @@ export async function executeFullPipeline(
       });
       redactionSummary.overlayShown = true;
 
-      // Canvas redaction on screenshot (if available)
+      // Canvas redaction on screenshot via offscreen ML host
       if (screenshotDataUrl) {
         try {
-          const { redactScreenshot } = await import("../privacy/screenshot-redactor");
-          const redacted = await redactScreenshot(screenshotDataUrl, piiDetection.regions);
-          if (redacted.regionsRedacted > 0) {
+          const redactRegions = piiDetection.regions
+            .filter((r) => r.boundingBox && r.redactionStrategy !== "none")
+            .map((r) => ({
+              x: r.boundingBox!.x,
+              y: r.boundingBox!.y,
+              width: r.boundingBox!.width,
+              height: r.boundingBox!.height,
+              strategy: r.redactionStrategy as "blur" | "black_box" | "pixelate" | "mask_text",
+            }));
+
+          if (redactRegions.length > 0) {
+            const redacted = await callOffscreen("redactScreenshot", {
+              imageDataUrl: screenshotDataUrl,
+              regions: redactRegions,
+            });
+            redactedScreenshotUrl = redacted.imageDataUrl;
             redactionSummary.totalPII = redacted.regionsRedacted;
             redactionSummary.redacted = redacted.regionsRedacted;
           }
-        } catch {
-          // Canvas redaction is optional
+        } catch (err) {
+          console.warn("[VLESS] Offscreen redaction failed:", err);
         }
       }
 
@@ -303,17 +317,19 @@ export async function executeFullPipeline(
 
     // If true, re-OCR confirmed zero PII in the redacted frame
     let redactionVerified = false;
-    if (screenshotDataUrl && redactionSummary.redacted > 0) {
+    const verifyTarget = redactedScreenshotUrl || screenshotDataUrl;
+    if (verifyTarget && redactionSummary.redacted > 0) {
       const verifyStep = addStep("verify_redaction");
       const verifyResult = await runStep(verifyStep, async () => {
-        // We need the redacted screenshot, not the original.
-        // The screenshot-redactor returns it, but for now we verify
-        // that our redaction CSS was applied to the DOM.
-        // TODO: Wire actual redacted frame through once canvas redaction is complete.
-        const { verifyRedaction } = await import("../privacy/redaction-verify");
-        // Use the original screenshot for now — real verification
-        // happens when the redacted frame is available.
-        return verifyRedaction(screenshotDataUrl);
+        // Re-OCR the REDACTED screenshot via offscreen to prove PII is gone
+        const result = await callOffscreen("verifyRedaction", {
+          imageDataUrl: verifyTarget,
+        });
+        return {
+          passed: result.passed,
+          piiTextFound: result.residualPII,
+          timings: { ocr: result.ocrTimeMs },
+        };
       });
       if (verifyResult) {
         redactionVerified = verifyResult.passed;

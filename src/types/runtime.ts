@@ -136,6 +136,27 @@ export interface OffscreenMethods {
     params: { imageDataUrl: string; lang?: OcrLang | "auto"; maxSide?: number };
     result: OcrResult;
   };
+  /** Redact a screenshot: blur faces, black-box passwords/PII, pixelate moderate. */
+  redactScreenshot: {
+    params: {
+      imageDataUrl: string;
+      regions: Array<{
+        x: number; y: number; width: number; height: number;
+        strategy: "blur" | "black_box" | "pixelate" | "mask_text";
+      }>;
+    };
+    result: { imageDataUrl: string; regionsRedacted: number };
+  };
+  /** Verify a redacted screenshot: re-OCR and check for residual PII text. */
+  verifyRedaction: {
+    params: { imageDataUrl: string };
+    result: {
+      passed: boolean;
+      residualPII: number;
+      wordsFound: number;
+      ocrTimeMs: number;
+    };
+  };
 }
 
 export type OffscreenMethodName = keyof OffscreenMethods;

@@ -8,6 +8,7 @@ import { serveOffscreen } from "../../core/runtime/messaging";
 import { detectBackend } from "../../core/runtime/backend";
 import { getModelStatuses, warmModels } from "../../core/runtime/model-host";
 import { runOcr } from "../../core/ocr/ocr-engine";
+import { redactScreenshot, verifyRedactionOffscreen } from "../../core/privacy/offscreen-redact";
 
 serveOffscreen({
   ping: () => ({ pong: true as const, ts: Date.now() }),
@@ -15,6 +16,8 @@ serveOffscreen({
   getModelStatuses: () => getModelStatuses(),
   warmModels: ({ ids }) => warmModels(ids),
   runOcr: (params) => runOcr(params),
+  redactScreenshot: (params) => redactScreenshot(params.imageDataUrl, params.regions),
+  verifyRedaction: (params) => verifyRedactionOffscreen(params.imageDataUrl),
 });
 
 // Announce readiness in the offscreen console (visible via chrome://extensions
