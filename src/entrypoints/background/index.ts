@@ -1,7 +1,14 @@
 // ============================================================
-// VLESS — Background Service Worker
-// The orchestrator: routes messages between side panel ↔ content script
-// FULLY INTEGRATED: HybridPerceiver + LLM + Visual Diff + Learning Log
+// VLESS — Background Service Worker (Production)
+// The orchestrator: routes messages, plans, verifies
+//
+// Architecture:
+//   - Background: plans actions, manages task lifecycle, verifies
+//   - Content Script: executes actions in page context (DOM is accessible there)
+//   - Side Panel: displays status, learning log, privacy monitor
+//
+// Key design: Background NEVER touches the DOM directly.
+// It sends messages to the content script which runs in page context.
 // ============================================================
 
 import { defineBackground } from "wxt/utils/define-background";
@@ -11,21 +18,18 @@ import type {
   PageState,
   MessageType,
   PlannedAction,
+  AgentAction,
+  VerificationSignal,
 } from "../../types";
 import { checkOllamaAvailability, generatePlanWithLLM, isLLMAvailable, getLLMStatus } from "../../core/agent/llm-bridge";
 import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
 import { validateForm } from "../../core/agent/validator";
-import { getHybridPerceiver } from "../../core/perception/hybrid-perceiver";
-import { getModelManager } from "../../core/models/model-manager";
 
 export default defineBackground({
   persistent: false,
 
   main() {
-    const perceiver = getHybridPerceiver();
-    const modelManager = getModelManager();
-
     // ── Extension Lifecycle ──────────────────────────────
 
     chrome.runtime.onInstalled.addListener(async () => {
@@ -42,11 +46,8 @@ export default defineBackground({
         },
       });
 
-      // Check Ollama + detect backend on install
-      const [llmStatus] = await Promise.all([
-        checkOllamaAvailability(),
-        modelManager.detectBackend(),
-      ]);
+      // Check Ollama on install
+      const llmStatus = await checkOllamaAvailability();
       console.log("🐾 LLM:", llmStatus.available ? `Connected (${llmStatus.model})` : "Unavailable");
     });
 
@@ -72,7 +73,7 @@ export default defineBackground({
             sendResponse({ error: error.message });
           });
 
-        return true;
+        return true; // Keep channel open for async response
       }
     );
 
@@ -90,7 +91,7 @@ export default defineBackground({
         case "PERCEIVE_PAGE":
           return handlePerceivePage();
         case "EXECUTE_ACTION":
-          return handleExecuteAction(message.payload);
+          return handleExecuteAction(message.payload as AgentAction);
         case "GET_MEMORY":
           return handleGetMemory(message.payload as { domain: string });
         case "SAVE_MEMORY":
@@ -108,7 +109,9 @@ export default defineBackground({
       }
     }
 
-    // ── Task Management (FULLY INTEGRATED) ───────────────
+    // ══════════════════════════════════════════════════════
+    // TASK ORCHESTRATION — The brain of the agent
+    // ══════════════════════════════════════════════════════
 
     async function handleStartTask(payload: {
       description: string;
@@ -133,16 +136,21 @@ export default defineBackground({
       broadcast({ type: "TASK_STATUS", payload: task });
 
       try {
-        // ── PHASE 1: PERCEIVE (Hybrid Perceiver) ────────
-        log("discovery", "Perceiving page with hybrid DOM+Vision pipeline...");
-        const perceptionResult = await perceiver.perceive();
-        const pageState = perceptionResult.pageState;
+        // ── PHASE 1: PERCEIVE ──────────────────────────
+        log("discovery", "Scanning page...");
+        const pageState = await handlePerceivePage();
 
-        log("analysis", `Source: ${perceptionResult.source} | Confidence: ${(perceptionResult.domConfidence * 100).toFixed(0)}%`);
-        log("analysis", `Elements: ${pageState.elements.length} | Forms: ${pageState.forms.length}`);
+        log("analysis", `Page: "${pageState.title}" | ${pageState.elements.length} interactive elements | ${pageState.forms.length} form(s)`);
+        if (pageState.metadata.hasCAPTCHA) {
+          log("warning", "⚠️ CAPTCHA detected — agent cannot bypass this");
+        }
+        if (pageState.metadata.hasHoneypot) {
+          log("warning", "⚠️ Honeypot field detected — will skip");
+        }
+
         narratePerception(pageState);
 
-        // ── PHASE 2: PLAN (LLM or Rule-Based) ──────────
+        // ── PHASE 2: PLAN ──────────────────────────────
         task.status = "planning";
         broadcast({ type: "TASK_STATUS", payload: task });
         log("analysis", "Generating action plan...");
@@ -164,12 +172,22 @@ export default defineBackground({
             plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
           }
         } else {
+          log("analysis", "📋 Using rule-based planning (Ollama not available)");
           plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
         }
 
         task.plan = plan;
         task.totalSteps = plan.steps.length;
         log("analysis", `Plan: ${plan.steps.length} steps, ~${((plan.estimatedTime) / 1000).toFixed(1)}s`);
+
+        if (plan.steps.length === 0) {
+          log("warning", "No actions to perform — task complete");
+          task.status = "completed";
+          task.endTime = Date.now();
+          task.result = "No actionable steps found on this page";
+          broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean() } });
+          return task;
+        }
 
         // ── PHASE 2.5: VALIDATE ────────────────────────
         const allFormFields = pageState.forms.flatMap((f) => f.fields);
@@ -182,74 +200,119 @@ export default defineBackground({
             }))
           );
           if (!validation.allValid) {
-            log("warning", `Validation: ${validation.blockingIssues.join(", ")}`);
+            log("warning", `Validation warnings: ${validation.blockingIssues.join(", ")}`);
           } else if (allFormFields.some((f) => f.required)) {
             log("success", `All ${allFormFields.filter((f) => f.required).length} required fields validated OK`);
           }
         }
 
-        // ── PHASE 3: EXECUTE (with retry + visual diff) ─
+        // ── PHASE 3: EXECUTE ───────────────────────────
         task.status = "executing";
         broadcast({ type: "TASK_STATUS", payload: task });
 
         let stepsCompleted = 0;
+
         for (const step of plan.steps) {
           task.currentStep = step.index;
           broadcast({ type: "TASK_STATUS", payload: task });
           narrateAction(step.action);
-          log("action", `Step ${step.index + 1}: ${step.reasoning}`);
+          log("action", `Step ${step.index + 1}/${plan.steps.length}: ${step.reasoning}`);
 
-          // Capture before state for verification
-          let beforeState: { pageState: PageState } | null = null;
+          // Capture before state
+          let beforeState: PageState | null = null;
           try {
-            beforeState = await perceiver.perceive();
+            beforeState = await handlePerceivePage();
           } catch { /* optional */ }
 
           // Execute with retries
           let lastError = "";
           let success = false;
+
           for (let retry = 0; retry <= step.action.maxRetries; retry++) {
-            if (retry > 0) narrateRetry(retry, step.action.maxRetries, lastError);
+            if (retry > 0) {
+              narrateRetry(retry, step.action.maxRetries, lastError);
+              log("action", `Retry ${retry}/${step.action.maxRetries}: ${lastError}`);
+              // Wait before retry (content may be loading)
+              await sleep(500);
+            }
 
             const result = await handleExecuteAction(step.action);
+
             if (result.success) {
               success = true;
 
-              // ── VISUAL DIFF VERIFICATION ──────────────
-              try {
-                const afterState = await perceiver.perceive();
-                const domChanged = beforeState
-                  ? beforeState.pageState.elements.length !== afterState.pageState.elements.length ||
-                    beforeState.pageState.textContent !== afterState.pageState.textContent
-                  : true;
+              // ── VERIFY: Compare before/after page state ─
+              const signals: VerificationSignal[] = [];
 
-                if (domChanged) {
-                  log("success", `Step ${step.index + 1} verified: page changed as expected`);
-                  narrateResult(true, "Page state changed — action confirmed");
+              try {
+                const afterState = await handlePerceivePage();
+
+                // DOM diff: did the page change?
+                const elementCountChanged = beforeState
+                  ? beforeState.elements.length !== afterState.elements.length
+                  : false;
+                const textChanged = beforeState
+                  ? beforeState.textContent !== afterState.textContent
+                  : false;
+                const formsChanged = beforeState
+                  ? JSON.stringify(beforeState.forms) !== JSON.stringify(afterState.forms)
+                  : false;
+
+                const pageChanged = elementCountChanged || textChanged || formsChanged;
+
+                signals.push({
+                  type: "dom_diff",
+                  passed: true,
+                  confidence: pageChanged ? 0.9 : 0.6,
+                  details: pageChanged
+                    ? "Page state changed after action"
+                    : "Page unchanged (action may be visual only)",
+                });
+
+                if (pageChanged) {
+                  log("success", `Step ${step.index + 1} verified: page changed`);
                 } else {
-                  log("warning", `Step ${step.index + 1}: page unchanged — may need verification`);
-                  narrateResult(true, "Action executed (page unchanged — may need visual check)");
+                  log("analysis", `Step ${step.index + 1}: page unchanged (may be visual only)`);
+                }
+
+                // For type actions: verify the field value changed
+                if (step.action.type === "type" && step.action.value) {
+                  const targetField = afterState.forms
+                    .flatMap((f) => f.fields)
+                    .find((f) => f.id === step.action.target || f.name === step.action.target);
+
+                  if (targetField) {
+                    const valueMatches = targetField.value === step.action.value;
+                    signals.push({
+                      type: "dom_diff",
+                      passed: valueMatches,
+                      confidence: valueMatches ? 0.95 : 0.3,
+                      details: valueMatches
+                        ? `Field value matches: "${step.action.value}"`
+                        : `Field value mismatch: expected "${step.action.value}", got "${targetField.value}"`,
+                    });
+                  }
                 }
               } catch {
-                narrateResult(true);
+                // Verification is best-effort
+                signals.push({
+                  type: "dom_diff",
+                  passed: true,
+                  confidence: 0.5,
+                  details: "Verification skipped — could not re-perceive page",
+                });
               }
+
+              narrateResult(true, signals.length > 0 ? `${signals.length} signal(s) checked` : undefined);
               break;
             }
+
             lastError = result.error || "Unknown error";
           }
 
           if (!success) {
             narrateResult(false, lastError);
-            log("error", `Step ${step.index + 1} failed: ${lastError}`);
-
-            // ── LLM FAILURE ANALYSIS ───────────────────
-            if (isLLMAvailable() && beforeState) {
-              try {
-                const { analyzeFailure } = await import("../../core/agent/llm-bridge");
-                const analysis = await analyzeFailure(step.action, lastError, beforeState.pageState);
-                log("analysis", `LLM analysis: ${analysis.analysis}`);
-              } catch { /* optional */ }
-            }
+            log("error", `Step ${step.index + 1} failed after retries: ${lastError}`);
 
             task.status = "failed";
             task.error = lastError;
@@ -260,7 +323,7 @@ export default defineBackground({
           }
 
           stepsCompleted++;
-          await sleep(500);
+          await sleep(300); // Brief pause between steps
         }
 
         // ── PHASE 4: COMPLETE ──────────────────────────
@@ -273,7 +336,7 @@ export default defineBackground({
         log("success", `🎉 Task completed! ${stepsCompleted}/${plan.steps.length} steps in ${elapsed}s`);
 
         const finalStats = stopMonitoring();
-        log("success", `🔒 Privacy: ${finalStats.outboundRequests} outbound, ${finalStats.bytesSent} bytes sent`);
+        log("success", `🔒 Privacy: ${finalStats.outboundRequests} outbound requests, ${finalStats.bytesSent} bytes sent`);
 
         broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean(), privacyStats: finalStats } });
         return task;
@@ -288,7 +351,102 @@ export default defineBackground({
       }
     }
 
-    // ── Rule-Based Plan Generator ────────────────────────
+    // ══════════════════════════════════════════════════════
+    // PAGE PERCEPTION — via content script
+    // ══════════════════════════════════════════════════════
+
+    async function handlePerceivePage(): Promise<PageState> {
+      const tab = await getActiveTab();
+      if (!tab?.id) {
+        return createEmptyPageState();
+      }
+
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          type: "PERCEIVE_PAGE",
+          payload: null,
+          source: "background",
+          timestamp: Date.now(),
+        } as Message);
+
+        return response as PageState;
+      } catch {
+        // Content script not injected yet — inject and retry
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["content.js"],
+          });
+          await sleep(200);
+
+          const response = await chrome.tabs.sendMessage(tab.id, {
+            type: "PERCEIVE_PAGE",
+            payload: null,
+            source: "background",
+            timestamp: Date.now(),
+          } as Message);
+
+          return response as PageState;
+        } catch {
+          return createEmptyPageState();
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════
+    // ACTION EXECUTION — via content script
+    // The content script has direct DOM access.
+    // Background sends the action, content script executes it.
+    // ══════════════════════════════════════════════════════
+
+    async function handleExecuteAction(
+      action: AgentAction
+    ): Promise<{ success: boolean; error?: string }> {
+      const tab = await getActiveTab();
+      if (!tab?.id) {
+        return { success: false, error: "No active tab found" };
+      }
+
+      try {
+        // Send action to content script for execution
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          type: "EXECUTE_ACTION",
+          payload: action,
+          source: "background",
+          timestamp: Date.now(),
+        } as Message);
+
+        return response as { success: boolean; error?: string };
+      } catch (error) {
+        // Content script not ready — inject and retry
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["content.js"],
+          });
+          await sleep(300);
+
+          const response = await chrome.tabs.sendMessage(tab.id, {
+            type: "EXECUTE_ACTION",
+            payload: action,
+            source: "background",
+            timestamp: Date.now(),
+          } as Message);
+
+          return response as { success: boolean; error?: string };
+        } catch (retryError) {
+          return {
+            success: false,
+            error: retryError instanceof Error ? retryError.message : "Failed to execute action",
+          };
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════
+    // RULE-BASED PLAN GENERATOR
+    // When Ollama isn't available, generate a plan from rules
+    // ══════════════════════════════════════════════════════
 
     function generateRuleBasedPlan(
       description: string,
@@ -299,49 +457,117 @@ export default defineBackground({
       let idx = 0;
       const lower = description.toLowerCase();
 
+      // Fill form: click + type each unfilled required field
       if (lower.includes("fill") || lower.includes("complete") || lower.includes("submit")) {
         const allFields = pageState.forms.flatMap((f) => f.fields);
         const unfilled = allFields.filter((f) => !f.filledByUser && f.required);
 
         for (const field of unfilled) {
           const value = data?.[field.name] || data?.[field.label] || "";
+          const target = field.id || field.name || field.label;
+
           if (value) {
+            // Click to focus
             steps.push({
               index: idx++,
-              action: { id: `a-${idx}`, type: "click", target: field.id || field.name, retries: 0, maxRetries: 3 },
-              reasoning: `Click "${field.label || field.name}"`,
+              action: {
+                id: `a-${idx}`, type: "click",
+                target, retries: 0, maxRetries: 3,
+              },
+              reasoning: `Focus "${field.label || field.name}"`,
               confidence: 0.9,
               verification: "Field should be focused",
               risk: "low",
             });
+
+            // Type value
             steps.push({
               index: idx++,
-              action: { id: `a-${idx}`, type: "type", target: field.id || field.name, value, retries: 0, maxRetries: 3 },
-              reasoning: `Type "${value}"`,
+              action: {
+                id: `a-${idx}`, type: "type",
+                target, value, retries: 0, maxRetries: 3,
+              },
+              reasoning: `Type "${value}" in "${field.label || field.name}"`,
               confidence: 0.85,
-              verification: "Field value should match",
+              verification: `Field value should be "${value}"`,
+              risk: "low",
+            });
+          } else if (field.options.length > 0) {
+            // Select dropdown — pick first option as placeholder
+            steps.push({
+              index: idx++,
+              action: {
+                id: `a-${idx}`, type: "select",
+                target, value: field.options[0] || "", retries: 0, maxRetries: 3,
+              },
+              reasoning: `Select "${field.options[0]}" in "${field.label || field.name}"`,
+              confidence: 0.7,
+              verification: "Option should be selected",
               risk: "low",
             });
           }
         }
       }
 
+      // Scroll
       if (lower.includes("scroll")) {
+        const dir = lower.includes("up") ? "up" : "down";
         steps.push({
           index: idx++,
-          action: { id: `a-${idx}`, type: "scroll", value: "down", retries: 0, maxRetries: 1 },
-          reasoning: "Scroll down",
+          action: {
+            id: `a-${idx}`, type: "scroll",
+            value: dir, retries: 0, maxRetries: 1,
+          },
+          reasoning: `Scroll ${dir}`,
           confidence: 0.9,
           verification: "Page should scroll",
           risk: "low",
         });
       }
 
+      // Click specific element
+      const clickMatch = lower.match(/(?:click|press|tap)\s+(?:on\s+)?["']?([^"']+)["']?/);
+      if (clickMatch) {
+        steps.push({
+          index: idx++,
+          action: {
+            id: `a-${idx}`, type: "click",
+            target: clickMatch[1].trim(), retries: 0, maxRetries: 3,
+          },
+          reasoning: `Click "${clickMatch[1].trim()}"`,
+          confidence: 0.8,
+          verification: "Element should respond",
+          risk: "low",
+        });
+      }
+
+      // Navigate
+      const navMatch = lower.match(/(?:go to|open|navigate to|visit)\s+(.+)/);
+      if (navMatch) {
+        let url = navMatch[1].trim();
+        if (!url.startsWith("http")) url = `https://${url}`;
+        steps.push({
+          index: idx++,
+          action: {
+            id: `a-${idx}`, type: "navigate",
+            value: url, retries: 0, maxRetries: 1,
+          },
+          reasoning: `Navigate to "${url}"`,
+          confidence: 0.9,
+          verification: "URL should change",
+          risk: "medium",
+        });
+      }
+
+      // Fallback: no recognized command
       if (steps.length === 0) {
         steps.push({
           index: idx++,
-          action: { id: `a-${idx}`, type: "wait", timeout: 1000, retries: 0, maxRetries: 0 },
-          reasoning: `No specific actions for: "${description}"`,
+          action: {
+            id: `a-${idx}`, type: "wait",
+            timeout: 1000, retries: 0, maxRetries: 0,
+          },
+          reasoning: `No actions recognized for: "${description}"`,
           confidence: 0.3,
           verification: "Page unchanged",
           risk: "low",
@@ -357,92 +583,9 @@ export default defineBackground({
       };
     }
 
-    // ── Page Perception (via Hybrid Perceiver) ───────────
-
-    async function handlePerceivePage(): Promise<PageState> {
-      const result = await perceiver.perceive();
-      return result.pageState;
-    }
-
-    // ── Action Execution ─────────────────────────────────
-
-    async function handleExecuteAction(
-      action: any
-    ): Promise<{ success: boolean; error?: string }> {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) throw new Error("No active tab");
-
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (a: any) => {
-          const find = (t: string): Element | null => {
-            if (document.getElementById(t)) return document.getElementById(t);
-            try { const e = document.querySelector(t); if (e) return e; } catch {}
-            const n = document.querySelector(`[name="${t}"]`); if (n) return n;
-            const ar = document.querySelector(`[aria-label="${t}"]`); if (ar) return ar;
-            const ph = document.querySelector(`[placeholder="${t}"]`); if (ph) return ph;
-            const btns = document.querySelectorAll("button, a, [role='button']");
-            for (const b of btns) {
-              if (b.textContent?.trim().toLowerCase().includes(t.toLowerCase())) return b;
-            }
-            return null;
-          };
-
-          try {
-            switch (a.type) {
-              case "click": {
-                const el = a.coordinates
-                  ? document.elementFromPoint(a.coordinates.x, a.coordinates.y)
-                  : find(a.target || "");
-                if (!el) return { success: false, error: `Not found: ${a.target}` };
-                el.scrollIntoView({ behavior: "smooth", block: "center" });
-                const r = el.getBoundingClientRect();
-                for (const e of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"])
-                  el.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 }));
-                return { success: true };
-              }
-              case "type": {
-                const el = find(a.target || "");
-                if (!el) return { success: false, error: `Not found: ${a.target}` };
-                (el as HTMLInputElement).focus();
-                el.scrollIntoView({ behavior: "smooth", block: "center" });
-                const inp = el as HTMLInputElement;
-                inp.select(); inp.value = "";
-                inp.dispatchEvent(new Event("input", { bubbles: true }));
-                for (const c of a.value || "") {
-                  inp.dispatchEvent(new KeyboardEvent("keydown", { key: c, bubbles: true }));
-                  inp.value += c;
-                  inp.dispatchEvent(new InputEvent("input", { data: c, inputType: "insertText", bubbles: true }));
-                  inp.dispatchEvent(new KeyboardEvent("keyup", { key: c, bubbles: true }));
-                }
-                inp.dispatchEvent(new Event("change", { bubbles: true }));
-                inp.blur();
-                return { success: true };
-              }
-              case "scroll": {
-                const d = (a.value || "down").toLowerCase();
-                const m: Record<string, number> = { up: -500, down: 500, top: -99999, bottom: 99999 };
-                window.scrollBy({ top: m[d] || 500, behavior: "smooth" });
-                return { success: true };
-              }
-              case "navigate": {
-                window.location.href = a.value || "";
-                return { success: true };
-              }
-              default:
-                return { success: false, error: `Unknown: ${a.type}` };
-            }
-          } catch (e: any) {
-            return { success: false, error: e.message };
-          }
-        },
-        args: [action],
-      });
-
-      return results?.[0]?.result || { success: false, error: "Script execution failed" };
-    }
-
-    // ── Memory ───────────────────────────────────────────
+    // ══════════════════════════════════════════════════════
+    // MEMORY
+    // ══════════════════════════════════════════════════════
 
     async function handleGetMemory(payload: { domain: string }): Promise<unknown> {
       const r = await chrome.storage.local.get(`memory_${payload.domain}`);
@@ -453,7 +596,14 @@ export default defineBackground({
       await chrome.storage.local.set({ [`memory_${payload.domain}`]: payload.data });
     }
 
-    // ── Helpers ──────────────────────────────────────────
+    // ══════════════════════════════════════════════════════
+    // HELPERS
+    // ══════════════════════════════════════════════════════
+
+    async function getActiveTab() {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab;
+    }
 
     function broadcast(message: { type: MessageType; payload: unknown }): void {
       chrome.runtime.sendMessage(message).catch(() => {});
@@ -461,6 +611,19 @@ export default defineBackground({
 
     function sleep(ms: number): Promise<void> {
       return new Promise((r) => setTimeout(r, ms));
+    }
+
+    function createEmptyPageState(): PageState {
+      return {
+        url: "", title: "", timestamp: Date.now(),
+        elements: [], forms: [], textContent: "",
+        metadata: {
+          hasCAPTCHA: false, hasHoneypot: false, isSecure: true,
+          hasFileUpload: false, hasPaymentForm: false,
+          formCount: 0, totalElements: 0, interactiveElements: 0,
+        },
+        confidence: 0, perceptionTime: 0,
+      };
     }
   },
 });

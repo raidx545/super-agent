@@ -343,16 +343,25 @@ export default defineContentScript({
                 return;
               }
               const select = el as HTMLSelectElement;
+              // Exact match
               for (const opt of select.options) {
                 if (
                   opt.value === action.value ||
-                  opt.text.toLowerCase() ===
-                    action.value?.toLowerCase()
+                  opt.text.toLowerCase() === action.value?.toLowerCase()
                 ) {
                   select.value = opt.value;
-                  select.dispatchEvent(
-                    new Event("change", { bubbles: true })
-                  );
+                  select.dispatchEvent(new Event("change", { bubbles: true }));
+                  select.dispatchEvent(new Event("input", { bubbles: true }));
+                  resolve({ success: true });
+                  return;
+                }
+              }
+              // Partial match
+              for (const opt of select.options) {
+                if (opt.text.toLowerCase().includes((action.value || "").toLowerCase())) {
+                  select.value = opt.value;
+                  select.dispatchEvent(new Event("change", { bubbles: true }));
+                  select.dispatchEvent(new Event("input", { bubbles: true }));
                   resolve({ success: true });
                   return;
                 }
@@ -383,21 +392,18 @@ export default defineContentScript({
               break;
             }
 
+            case "wait": {
+              setTimeout(() => resolve({ success: true }), action.timeout || 1000);
+              break;
+            }
+
             case "press_key": {
-              const active =
-                document.activeElement || document.body;
-              active.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                  key: action.key,
-                  bubbles: true,
-                })
-              );
-              active.dispatchEvent(
-                new KeyboardEvent("keyup", {
-                  key: action.key,
-                  bubbles: true,
-                })
-              );
+              const activeEl = document.activeElement || document.body;
+              for (const evt of ["keydown", "keypress", "keyup"]) {
+                activeEl.dispatchEvent(new KeyboardEvent(evt, {
+                  key: action.key || "", code: action.key || "", bubbles: true,
+                }));
+              }
               resolve({ success: true });
               break;
             }
