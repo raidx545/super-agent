@@ -298,7 +298,10 @@ export type MessageType =
   | "SAVE_MEMORY"
   | "USER_INPUT"
   | "CANCEL_TASK"
-  | "TOGGLE_OVERLAY";
+  | "TOGGLE_OVERLAY"
+  | "CHECK_LLM"
+  | "GET_LLM_STATUS"
+  | "GET_PRIVACY_STATS";
 
 export interface Message<T = unknown> {
   type: MessageType;

@@ -1,6 +1,7 @@
 // ============================================================
 // VLESS — Background Service Worker
 // The orchestrator: routes messages between side panel ↔ content script
+// Now integrated with LLM bridge, learning log, network monitor
 // ============================================================
 
 import { defineBackground } from "wxt/utils/define-background";
@@ -9,7 +10,11 @@ import type {
   AgentTask,
   PageState,
   MessageType,
+  PlannedAction,
 } from "../../types";
+import { checkOllamaAvailability, generatePlanWithLLM, isLLMAvailable, getLLMStatus } from "../../core/agent/llm-bridge";
+import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
+import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
 
 export default defineBackground({
   persistent: false,
@@ -17,7 +22,7 @@ export default defineBackground({
   main() {
     // ── Extension Lifecycle ──────────────────────────────
 
-    chrome.runtime.onInstalled.addListener(() => {
+    chrome.runtime.onInstalled.addListener(async () => {
       console.log("🐾 VLESS installed.");
 
       chrome.storage.local.set({
@@ -27,9 +32,13 @@ export default defineBackground({
           showVisualDebug: true,
           maxRetries: 3,
           stepDelay: 300,
-          language: "en",
+          language: "hi-IN",
         },
       });
+
+      // Check Ollama availability on install
+      const llmStatus = await checkOllamaAvailability();
+      console.log("🐾 LLM Status:", llmStatus.available ? `Connected (${llmStatus.model})` : "Unavailable");
     });
 
     // Open side panel when extension icon is clicked
@@ -88,6 +97,18 @@ export default defineBackground({
         case "SAVE_MEMORY":
           return handleSaveMemory(message.payload as { domain: string; data: unknown });
 
+        case "TOGGLE_OVERLAY":
+          return { success: true };
+
+        case "CHECK_LLM":
+          return checkOllamaAvailability();
+
+        case "GET_LLM_STATUS":
+          return getLLMStatus();
+
+        case "GET_PRIVACY_STATS":
+          return getStats();
+
         default:
           return {
             error: `Unknown message type: ${message.type}`,
@@ -95,13 +116,16 @@ export default defineBackground({
       }
     }
 
-    // ── Task Management ──────────────────────────────────
+    // ── Task Management (with LLM + Learning Log + Privacy) ──
 
     async function handleStartTask(payload: {
       description: string;
       data?: Record<string, string>;
     }): Promise<AgentTask> {
       console.log(`🐾 Starting task: "${payload.description}"`);
+
+      // Start privacy monitoring
+      startMonitoring();
 
       const task: AgentTask = {
         id: `task-${Date.now()}`,
@@ -123,19 +147,48 @@ export default defineBackground({
 
       try {
         // Step 1: Perceive
+        log("discovery", `Starting task: "${payload.description}"`);
         const pageState = await handlePerceivePage();
 
-        // Step 2: Plan
+        // Narrate what we see
+        narratePerception(pageState);
+
+        // Step 2: Plan — try LLM first, fall back to rule-based
         task.status = "planning";
         broadcast({ type: "TASK_STATUS", payload: task });
+        log("analysis", "Generating action plan...");
 
-        const plan = generatePlan(
-          payload.description,
-          pageState,
-          payload.data
-        );
+        let plan: { steps: PlannedAction[]; estimatedTime: number; riskLevel: "low" | "medium" | "high"; requiresConfirmation: boolean; dataMappings: any[] };
+
+        if (isLLMAvailable()) {
+          log("analysis", "🧠 Using LLM for intelligent planning...");
+          const llmResult = await generatePlanWithLLM(
+            payload.description,
+            pageState,
+            payload.data
+          );
+
+          if (llmResult.usedLLM && llmResult.steps.length > 0) {
+            log("learning", `LLM generated ${llmResult.steps.length} steps: ${llmResult.reasoning.slice(0, 100)}`);
+            plan = {
+              steps: llmResult.steps,
+              estimatedTime: llmResult.steps.length * 1500,
+              riskLevel: "low",
+              requiresConfirmation: false,
+              dataMappings: [],
+            };
+          } else {
+            log("warning", "LLM unavailable or returned no steps, using rule-based planning");
+            plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
+          }
+        } else {
+          log("analysis", "LLM not available, using rule-based planning");
+          plan = generateRuleBasedPlan(payload.description, pageState, payload.data);
+        }
+
         task.plan = plan;
         task.totalSteps = plan.steps.length;
+        log("analysis", `Plan ready: ${plan.steps.length} steps, estimated ${((plan.estimatedTime) / 1000).toFixed(1)}s`);
 
         // Step 3: Execute
         task.status = "executing";
@@ -146,15 +199,36 @@ export default defineBackground({
           task.currentStep = step.index;
           broadcast({ type: "TASK_STATUS", payload: task });
 
-          const result = await handleExecuteAction(step.action);
+          narrateAction(step.action);
+          log("action", `Step ${step.index + 1}: ${step.reasoning}`);
 
-          if (!result.success) {
+          // Execute with retries
+          let lastError = "";
+          let success = false;
+          for (let retry = 0; retry <= step.action.maxRetries; retry++) {
+            if (retry > 0) {
+              narrateRetry(retry, step.action.maxRetries, lastError);
+            }
+
+            const result = await handleExecuteAction(step.action);
+            if (result.success) {
+              success = true;
+              narrateResult(true);
+              break;
+            }
+            lastError = result.error || "Unknown error";
+          }
+
+          if (!success) {
+            narrateResult(false, lastError);
+            log("error", `Step ${step.index + 1} failed: ${lastError}`);
             task.status = "failed";
-            task.error = result.error || "Action failed";
+            task.error = lastError;
             task.endTime = Date.now();
+            stopMonitoring();
             broadcast({
               type: "TASK_COMPLETE",
-              payload: { task },
+              payload: { task, privacyClean: isClean() },
             });
             return task;
           }
@@ -166,9 +240,19 @@ export default defineBackground({
         task.status = "completed";
         task.endTime = Date.now();
         task.result = `Completed ${stepsCompleted}/${plan.steps.length} steps`;
+
+        // Learning: record what we learned
+        const elapsed = ((task.endTime - task.startTime) / 1000).toFixed(1);
+        narrateLearning(`Task completed in ${elapsed}s. ${stepsCompleted} steps executed successfully.`);
+        log("success", `🎉 Task completed! ${stepsCompleted}/${plan.steps.length} steps in ${elapsed}s`);
+
+        // Stop privacy monitoring
+        const finalStats = stopMonitoring();
+        log("success", `🔒 Privacy: ${finalStats.outboundRequests} outbound requests, ${finalStats.bytesSent} bytes sent`);
+
         broadcast({
           type: "TASK_COMPLETE",
-          payload: { task },
+          payload: { task, privacyClean: isClean(), privacyStats: finalStats },
         });
         return task;
       } catch (error) {
@@ -176,17 +260,19 @@ export default defineBackground({
         task.endTime = Date.now();
         task.error =
           error instanceof Error ? error.message : "Unknown error";
+        log("error", `Task failed: ${task.error}`);
+        stopMonitoring();
         broadcast({
           type: "TASK_COMPLETE",
-          payload: { task },
+          payload: { task, privacyClean: isClean() },
         });
         return task;
       }
     }
 
-    // ── Plan Generator ───────────────────────────────────
+    // ── Rule-Based Plan Generator ────────────────────────
 
-    function generatePlan(
+    function generateRuleBasedPlan(
       description: string,
       pageState: PageState,
       data?: Record<string, string>
