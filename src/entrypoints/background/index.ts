@@ -812,6 +812,7 @@ export default defineBackground({
           planResult: { success: false, steps: [], reasoning: "", provider: "none", latencyMs: 0 },
           privacyProof: { sensitiveDataDetected: 0, sensitiveDataRedacted: 0, dataSentToServer: { rawScreenshot: false, formValues: false, piiText: false, faces: false, sanitizedStructure: false, taskDescription: false }, zeroOutboundPII: true, proofDescription: "" },
           reasoningTrace: null,
+          latency: { capture: 0, ocr: 0, piiDetection: 0, redaction: 0, verification: 0, planning: 0, execution: 0, total: 0, backend: "error", tier: "error" },
           totalLatencyMs: 0,
           error: "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first.",
         };

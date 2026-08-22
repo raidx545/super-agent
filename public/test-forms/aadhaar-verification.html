@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aadhaar Verification — VLESS Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a1a; }
+    .header { background: linear-gradient(135deg, #1565c0, #1976d2); color: white; padding: 20px 0; }
+    .header-inner { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+    .header h1 { font-size: 22px; font-weight: 600; }
+    .header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+    .container { max-width: 800px; margin: 24px auto; padding: 0 24px; }
+    .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); padding: 24px; margin-bottom: 16px; }
+    .card h2 { font-size: 18px; margin-bottom: 16px; color: #1565c0; border-bottom: 2px solid #e3f2fd; padding-bottom: 8px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .form-row.full { grid-template-columns: 1fr; }
+    .form-group { display: flex; flex-direction: column; }
+    .form-group label { font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
+    .form-group label .required { color: #d32f2f; }
+    .form-group input, .form-group select { padding: 10px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+    .form-group input:focus, .form-group select:focus { border-color: #1565c0; outline: none; }
+    .form-group .hint { font-size: 11px; color: #888; margin-top: 2px; }
+    .btn-row { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
+    .btn { padding: 10px 24px; border: none; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: #1565c0; color: white; }
+    .btn-primary:hover { background: #1976d2; }
+    .btn-secondary { background: #e3f2fd; color: #1565c0; }
+    .pii-banner { padding: 12px 16px; background: #fce4ec; border-left: 4px solid #e91e63; border-radius: 0 4px 4px 0; margin-bottom: 16px; font-size: 13px; color: #880e4f; }
+    .demo-banner { padding: 12px 16px; background: #e8f5e9; border-left: 4px solid #4caf50; border-radius: 0 4px 4px 0; margin-bottom: 16px; font-size: 13px; color: #1b5e20; }
+    .face-photo { width: 120px; height: 150px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 48px; }
+    .face-section { display: flex; gap: 24px; align-items: flex-start; }
+    .face-section .form-fields { flex: 1; }
+    .footer { text-align: center; padding: 24px; color: #888; font-size: 12px; }
+    @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } .face-section { flex-direction: column; } }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <h1>UIDAI — Aadhaar Address Update</h1>
+    <p>Self Service Address Update Portal</p>
+  </div>
+</div>
+
+<div class="container">
+  <div class="demo-banner">
+    🧪 <strong>VLESS Demo Form</strong> — Contains PII elements (Aadhaar, PAN, face photo, phone, email). Watch VLESS detect and redact them in real-time.
+  </div>
+
+  <div class="pii-banner">
+    ⚠️ This form contains sensitive PII. VLESS will detect: Aadhaar number, PAN, face photo, phone, email, and address — then redact before any data leaves the device.
+  </div>
+
+  <form id="aadhaarForm" action="/api/aadhaar-update" method="POST">
+
+    <!-- Identity -->
+    <div class="card">
+      <h2>Identity Details</h2>
+      <div class="face-section">
+        <div>
+          <label style="font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; display: block;">Applicant Photo <span style="color: #d32f2f;">*</span></label>
+          <div class="face-photo" id="facePhoto">👤</div>
+          <input type="file" name="photo" id="photo" accept="image/jpeg" hidden>
+          <span class="hint">JPEG, passport-size photo</span>
+        </div>
+        <div class="form-fields">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Aadhaar Number <span class="required">*</span></label>
+              <input type="text" name="aadhaar" id="aadhaar" placeholder="XXXX XXXX XXXX" required maxlength="14">
+              <span class="hint">12-digit Aadhaar number</span>
+            </div>
+            <div class="form-group">
+              <label>PAN Number</label>
+              <input type="text" name="pan" id="pan" placeholder="ABCDE1234F" maxlength="10">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Full Name <span class="required">*</span></label>
+              <input type="text" name="full_name" id="full_name" placeholder="As per Aadhaar" required>
+            </div>
+            <div class="form-group">
+              <label>Date of Birth <span class="required">*</span></label>
+              <input type="date" name="dob" id="dob" required>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Gender <span class="required">*</span></label>
+              <select name="gender" id="gender" required>
+                <option value="">-- Select --</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Mobile Number <span class="required">*</span></label>
+              <input type="tel" name="mobile" id="mobile" placeholder="+91 98765 43210" required maxlength="15">
+            </div>
+          </div>
+          <div class="form-row full">
+            <div class="form-group">
+              <label>Email Address <span class="required">*</span></label>
+              <input type="email" name="email" id="email" placeholder="you@example.com" required>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Address -->
+    <div class="card">
+      <h2>New Address Details</h2>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>House No./Building/Apartment <span class="required">*</span></label>
+          <input type="text" name="house_no" id="house_no" placeholder="Flat/House No., Building Name" required>
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Street/Road/Locality <span class="required">*</span></label>
+          <input type="text" name="street" id="street" placeholder="Street, Road, Locality" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Village/Town/City <span class="required">*</span></label>
+          <input type="text" name="city" id="city" placeholder="City or Town" required>
+        </div>
+        <div class="form-group">
+          <label>District <span class="required">*</span></label>
+          <input type="text" name="district" id="district" placeholder="District" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>State <span class="required">*</span></label>
+          <select name="state" id="state" required>
+            <option value="">-- Select State --</option>
+            <option value="andhra_pradesh">Andhra Pradesh</option>
+            <option value="delhi">Delhi</option>
+            <option value="goa">Goa</option>
+            <option value="gujarat">Gujarat</option>
+            <option value="karnataka">Karnataka</option>
+            <option value="kerala">Kerala</option>
+            <option value="madhya_pradesh">Madhya Pradesh</option>
+            <option value="maharashtra">Maharashtra</option>
+            <option value="punjab">Punjab</option>
+            <option value="rajasthan">Rajasthan</option>
+            <option value="tamil_nadu">Tamil Nadu</option>
+            <option value="telangana">Telangana</option>
+            <option value="uttar_pradesh">Uttar Pradesh</option>
+            <option value="west_bengal">West Bengal</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>PIN Code <span class="required">*</span></label>
+          <input type="text" name="pincode" id="pincode" placeholder="6-digit PIN" required pattern="\d{6}" maxlength="6">
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>IFSC Code (for Aadhaar-Bank linking)</label>
+          <input type="text" name="ifsc" id="ifsc" placeholder="SBIN0001234" maxlength="11">
+        </div>
+      </div>
+    </div>
+
+    <!-- Verification -->
+    <div class="card">
+      <h2>Verification & Submit</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label>OTP received on registered mobile <span class="required">*</span></label>
+          <input type="text" name="otp" id="otp" placeholder="6-digit OTP" maxlength="6">
+          <span class="hint">Sent to your Aadhaar-linked mobile</span>
+        </div>
+        <div class="form-group">
+          <label>Captcha</label>
+          <input type="text" name="captcha" id="captcha" placeholder="Enter captcha">
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label style="display: flex; gap: 8px; font-weight: normal; cursor: pointer;">
+          <input type="checkbox" name="consent" id="consent" required style="margin-top: 2px;">
+          <span>I authorize UIDAI to update my address based on the documents uploaded. I confirm the information is correct.</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-secondary" onclick="alert('Draft saved locally!')">Save Draft</button>
+      <button type="submit" class="btn btn-primary">Submit Update Request</button>
+    </div>
+  </form>
+</div>
+
+<div class="footer">
+  <p>Aadhaar Address Update Test Form — Built for VLESS Demo | No real data is submitted</p>
+</div>
+
+<script>
+  document.getElementById('aadhaarForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    alert('✅ Form validation passed!\n\nThis is a VLESS demo — no data was submitted to any server.\nAll PII was detected and redacted locally in your browser.');
+  });
+
+  document.getElementById('facePhoto')?.addEventListener('click', () => {
+    document.getElementById('photo')?.click();
+  });
+</script>
+
+</body>
+</html>

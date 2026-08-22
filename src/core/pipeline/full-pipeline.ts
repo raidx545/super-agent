@@ -40,8 +40,22 @@ export interface PipelineResult {
   planResult: PlanResult;
   privacyProof: PrivacyProof;
   reasoningTrace: ReasoningTrace | null;
+  latency: LatencyBreakdown;
   totalLatencyMs: number;
   error?: string;
+}
+
+export interface LatencyBreakdown {
+  capture: number;
+  ocr: number;
+  piiDetection: number;
+  redaction: number;
+  verification: number;
+  planning: number;
+  execution: number;
+  total: number;
+  backend: string;
+  tier: string;
 }
 
 export interface PipelineStep {
@@ -486,6 +500,21 @@ export async function executeFullPipeline(
 
     const totalLatency = performance.now() - startTime;
 
+    // Build latency breakdown from pipeline steps
+    const findStepMs = (name: string) => steps.find((s) => s.name === name)?.latencyMs || 0;
+    const latency: LatencyBreakdown = {
+      capture: findStepMs("capture"),
+      ocr: findStepMs("detect_pii"),
+      piiDetection: findStepMs("detect_pii"),
+      redaction: findStepMs("redact"),
+      verification: findStepMs("verify_redaction"),
+      planning: findStepMs("get_plan"),
+      execution: findStepMs("execute"),
+      total: totalLatency,
+      backend: planResult.provider || "rule-based",
+      tier: "auto",
+    };
+
     // Complete the reasoning trace
     const completedTrace = completeTrace(true);
 
@@ -499,6 +528,7 @@ export async function executeFullPipeline(
       planResult,
       privacyProof,
       reasoningTrace: completedTrace,
+      latency,
       totalLatencyMs: totalLatency,
     };
   } catch (error) {
@@ -932,6 +962,7 @@ function buildErrorResult(
       zeroOutboundPII: true, proofDescription: "",
     },
     reasoningTrace: null,
+    latency: { capture: 0, ocr: 0, piiDetection: 0, redaction: 0, verification: 0, planning: 0, execution: 0, total: 0, backend: "error", tier: "error" },
     totalLatencyMs: performance.now() - startTime,
     error,
   };
