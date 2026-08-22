@@ -44,6 +44,7 @@ VLESS eliminates this privacy risk by running visual perception models directly 
 ## Architecture
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#4a6fa5', 'primaryTextColor': '#e0e0e0', 'lineColor': '#6b8ab0', 'secondaryColor': '#3d6b5e', 'tertiaryColor': '#5c4a3a'}}}%%
 flowchart TB
     subgraph Client["Client (Chrome Extension)"]
         direction TB
@@ -84,10 +85,10 @@ flowchart TB
     EXECUTE --> VERIFY
     VERIFY -->|"Retry on failure"| EXECUTE
 
-    style Client fill:#e3e8f0,stroke:#455a7c,stroke-width:2px
-    style Server fill:#dceee7,stroke:#3a7c6e,stroke-width:2px
-    style PII fill:#f5ebe0,stroke:#8a6c42,stroke-width:1px
-    style RedactStrategies fill:#ede3e8,stroke:#8a5a72,stroke-width:1px
+    style Client fill:#1e2a3a,stroke:#4a6fa5,stroke-width:2px,color:#c8d6e5
+    style Server fill:#1a2e28,stroke:#3d6b5e,stroke-width:2px,color:#c8e6d8
+    style PII fill:#2e2418,stroke:#8a6c42,stroke-width:1px,color:#e0d0b8
+    style RedactStrategies fill:#2a1e26,stroke:#8a5a72,stroke-width:1px,color:#d8c0cc
 ```
 
 ---
@@ -132,6 +133,7 @@ The detection engine runs both channels in parallel with equal weighting:
 Detected PII regions are redacted using strategy matched to sensitivity:
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#4a6fa5', 'primaryTextColor': '#e0e0e0', 'lineColor': '#6b8ab0', 'secondaryColor': '#3d6b5e', 'tertiaryColor': '#5c4a3a'}}}%%
 flowchart LR
     PII["PII Region Detected"]
     CRITICAL{"Sensitivity?"}
@@ -148,7 +150,7 @@ flowchart LR
     MASK --> APPLY
     PIXEL --> APPLY
 
-    style CRITICAL fill:#f5ebe0,stroke:#8a6c42,stroke-width:2px
+    style CRITICAL fill:#2e2418,stroke:#8a6c42,stroke-width:2px,color:#e0d0b8
 ```
 
 ### Step 4: Sanitization
@@ -193,6 +195,7 @@ Actions are executed through the content script with multi-signal verification:
 Only sanitized structural metadata is transmitted. The following data categories are explicitly blocked from outbound transmission:
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#4a6fa5', 'primaryTextColor': '#e0e0e0', 'lineColor': '#6b8ab0', 'secondaryColor': '#3d6b5e', 'tertiaryColor': '#5c4a3a'}}}%%
 flowchart TB
     subgraph Blocked["Blocked from Transmission"]
         direction LR
@@ -211,8 +214,8 @@ flowchart TB
         RP["Redaction Proof"]
     end
 
-    style Blocked fill:#f0ddd8,stroke:#b05a4a,stroke-width:2px
-    style Allowed fill:#dceee7,stroke:#3a7c6e,stroke-width:2px
+    style Blocked fill:#2a1c18,stroke:#b05a4a,stroke-width:2px,color:#e8c0b8
+    style Allowed fill:#1a2e28,stroke:#3d6b5e,stroke-width:2px,color:#c8e6d8
 ```
 
 ### Privacy Proof
