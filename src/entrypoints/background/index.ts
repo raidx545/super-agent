@@ -86,7 +86,7 @@ export default defineBackground({
           );
 
         case "SAVE_MEMORY":
-          return handleSaveMemory(message.payload);
+          return handleSaveMemory(message.payload as { domain: string; data: unknown });
 
         default:
           return {
@@ -196,7 +196,8 @@ export default defineBackground({
         action: any;
         reasoning: string;
         confidence: number;
-        risk: string;
+        risk: "low" | "medium" | "high";
+        verification: string;
       }[] = [];
       let idx = 0;
 
@@ -228,7 +229,8 @@ export default defineBackground({
               },
               reasoning: `Click "${field.label || field.name}"`,
               confidence: 0.9,
-              risk: "low",
+              verification: "Field should be focused",
+              risk: "low" as const,
             });
             steps.push({
               index: idx++,
@@ -242,7 +244,8 @@ export default defineBackground({
               },
               reasoning: `Type "${value}"`,
               confidence: 0.85,
-              risk: "low",
+              verification: "Field value should match",
+              risk: "low" as const,
             });
           }
         }
@@ -254,7 +257,8 @@ export default defineBackground({
           action: { type: "scroll", value: "down" },
           reasoning: "Scroll down",
           confidence: 0.9,
-          risk: "low",
+          verification: "Page should scroll",
+          risk: "low" as const,
         });
       }
 
@@ -264,7 +268,8 @@ export default defineBackground({
           action: { type: "wait", timeout: 1000 },
           reasoning: `No specific actions for: "${description}"`,
           confidence: 0.3,
-          risk: "low",
+          verification: "Page unchanged",
+          risk: "low" as const,
         });
       }
 
@@ -320,6 +325,8 @@ export default defineBackground({
                   el.getAttribute("aria-label") ||
                   el.getAttribute("placeholder") ||
                   "",
+                placeholder: el.getAttribute("placeholder") || "",
+                ariaLabel: el.getAttribute("aria-label") || "",
                 type: el.getAttribute("type") || "",
                 rect: {
                   x: r.x,
@@ -403,7 +410,7 @@ export default defineBackground({
       });
 
       return (
-        results?.[0]?.result || ({} as PageState)
+        (results?.[0]?.result as PageState) || ({} as PageState)
       );
     }
 

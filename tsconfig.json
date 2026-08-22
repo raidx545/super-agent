@@ -14,13 +14,11 @@
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "outDir": "dist",
-    "rootDir": "src",
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
-    },
-    "types": ["wxt/client"]
+    }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "wxt.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", ".wxt/wxt.d.ts"],
   "exclude": ["node_modules", "dist", ".output"]
 }

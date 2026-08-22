@@ -5,13 +5,7 @@
 // ============================================================
 
 import { openDB, type IDBPDatabase } from "idb";
-import type {
-  SiteMemory,
-  PageMemory,
-  FormSchema,
-  ActionPattern,
-  NavigationGraph,
-} from "../../types";
+
 
 // ── Database Schema ──────────────────────────────────────────
 
@@ -36,7 +30,7 @@ interface VLESSDB {
 interface SiteMemoryData {
   domain: string;
   pages: Record<string, PageMemoryData>;
-  navigationFlow: NavigationGraph;
+  navigationFlow: { nodes: string[]; edges: { from: string; to: string; trigger: string; confidence: number }[] };
   formSchemas: Record<string, FormSchemaData>;
   elementPositions: Record<string, ElementPositionData>;
   successPatterns: ActionPatternData[];
@@ -254,8 +248,6 @@ export async function recordActionPattern(
 
     if (existing) {
       // Update existing pattern with running average
-      const totalUses =
-        existing.successRate * 100 + (success ? 1 : 0);
       existing.successRate =
         (existing.successRate * 100 + (success ? 100 : 0)) /
         101;
@@ -283,7 +275,7 @@ export async function recordNavigationEdge(
 ): Promise<void> {
   await updateSiteMemory(domain, (memory) => {
     const exists = memory.navigationFlow.edges.some(
-      (e) => e.from === from && e.to === to
+      (e: { from: string; to: string; trigger: string; confidence: number }) => e.from === from && e.to === to
     );
 
     if (!exists) {

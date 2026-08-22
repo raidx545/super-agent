@@ -8,13 +8,12 @@ import type {
   AgentTask,
   AgentStatus,
   PageState,
-  AgentAction,
   ActionResult,
   ActionPlan,
   PlannedAction,
   ReasoningStep,
-  VerificationResult,
   MessageType,
+  DataMapping,
 } from "../../types";
 import { extractPageState, isDOMSufficient } from "../perception/dom-extractor";
 import { executeAction } from "../actions/executor";
@@ -22,9 +21,7 @@ import { verifyAction } from "../verification/multi-signal";
 
 // ── Configuration ────────────────────────────────────────────
 
-const MAX_STEPS = 50;
 const MAX_RETRIES = 3;
-const STEP_TIMEOUT = 10_000; // 10 seconds per step
 const INTER_STEP_DELAY = 300; // ms between steps (human-like pacing)
 
 // ── Agent State ──────────────────────────────────────────────
@@ -252,7 +249,7 @@ async function generatePlan(
 interface TaskIntent {
   type: "form_fill" | "navigation" | "data_extraction" | "multi_step" | "unknown";
   targetElements?: string[];
-  dataMappings?: { fieldName: string; value: string; confidence: number }[];
+  dataMappings?: { fieldName: string; dataSource: string; value: string; confidence: number }[];
   parameters?: Record<string, string>;
 }
 
@@ -315,8 +312,8 @@ function classifyIntent(description: string): TaskIntent {
 
 function extractDataMappings(
   description: string
-): { fieldName: string; value: string; confidence: number }[] {
-  const mappings: { fieldName: string; value: string; confidence: number }[] = [];
+): DataMapping[] {
+  const mappings: DataMapping[] = [];
 
   // Look for patterns like "name: Shashank" or "fill name with X"
   const patterns = [
@@ -328,6 +325,7 @@ function extractDataMappings(
     while ((match = pattern.exec(description)) !== null) {
       mappings.push({
         fieldName: match[1],
+        dataSource: "description",
         value: match[2].trim(),
         confidence: 0.8,
       });
@@ -420,7 +418,7 @@ function planFormFill(
 }
 
 function planNavigation(
-  pageState: PageState,
+  _pageState: PageState,
   intent: TaskIntent,
   startIdx = 0
 ): PlannedAction[] {
@@ -446,8 +444,8 @@ function planNavigation(
 }
 
 function planExtraction(
-  pageState: PageState,
-  intent: TaskIntent,
+  _pageState: PageState,
+  _intent: TaskIntent,
   startIdx = 0
 ): PlannedAction[] {
   return [

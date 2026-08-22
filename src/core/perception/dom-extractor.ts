@@ -135,6 +135,7 @@ function extractInteractiveElements(): PageElement[] {
       role,
       text,
       label,
+      placeholder: el.getAttribute("placeholder") || "",
       ariaLabel,
       type: el.getAttribute("type") || "",
       rect: {

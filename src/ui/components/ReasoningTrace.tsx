@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from "react";
+import { useRef, useEffect } from "react";
 import type { AgentTask, ReasoningStep } from "../../types";
 
 interface ReasoningTraceProps {
@@ -17,7 +17,7 @@ const PHASE_CONFIG: Record<
   reflect: { icon: "🔄", color: "text-orange-400", label: "Reflecting" },
 };
 
-export function ReasoningTrace({ steps, task }: ReasoningTraceProps) {
+export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new steps arrive

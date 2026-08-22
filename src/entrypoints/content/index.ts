@@ -21,7 +21,7 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener(
       (
         message: Message,
-        sender: chrome.runtime.MessageSender,
+        _sender: chrome.runtime.MessageSender,
         sendResponse: (response: any) => void
       ) => {
         switch (message.type) {
@@ -30,7 +30,7 @@ export default defineContentScript({
             break;
 
           case "EXECUTE_ACTION":
-            executeAction(message.payload)
+            executeAction(message.payload as any)
               .then(sendResponse)
               .catch((err: Error) =>
                 sendResponse({ success: false, error: err.message })
@@ -38,12 +38,12 @@ export default defineContentScript({
             return true;
 
           case "UPDATE_DEBUG_OVERLAY":
-            updateDebugOverlay(message.payload);
+            updateDebugOverlay(message.payload as { elements?: any[] });
             sendResponse({ success: true });
             break;
 
           case "TOGGLE_OVERLAY":
-            toggleOverlay(message.payload?.active);
+            toggleOverlay((message.payload as any)?.active);
             sendResponse({ success: true, active: overlayActive });
             break;
 
@@ -168,7 +168,8 @@ export default defineContentScript({
               bottom: r.bottom,
               left: r.left,
               right: r.right,
-            },
+              toJSON: () => ({}),
+            } as DOMRect,
             label: getFieldLabel(input),
             filledByUser: !!(input as HTMLInputElement).value,
           };

@@ -9,7 +9,6 @@ import type {
   ActionResult,
   VerificationSignal,
   VerificationResult,
-  PageState,
 } from "../../types";
 
 // ── Main Verification ────────────────────────────────────────
@@ -205,7 +204,7 @@ async function verifyURLChange(
 // ── Signal: Error Check ──────────────────────────────────────
 
 async function verifyErrorCheck(
-  action: AgentAction,
+  _action: AgentAction,
   result: ActionResult
 ): Promise<VerificationSignal> {
   // Check for common error indicators in the page
@@ -267,8 +266,8 @@ async function verifyErrorCheck(
 // ── Signal: Accessibility Tree ───────────────────────────────
 
 async function verifyAccessibilityTree(
-  action: AgentAction,
-  result: ActionResult
+  _action: AgentAction,
+  _result: ActionResult
 ): Promise<VerificationSignal> {
   try {
     // Check ARIA live regions for status messages

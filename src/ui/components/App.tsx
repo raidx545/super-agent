@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { TaskInput } from "./TaskInput";
-import { AgentStatusPanel } from "./AgentStatusPanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 import { PageInspector } from "./PageInspector";
 import { Onboarding } from "./Onboarding";
@@ -32,7 +31,7 @@ export function App() {
   const [overlayActive, setOverlayActive] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [historyPosition, setHistoryPosition] = useState({ current: 0, total: 0 });
+  const [historyPosition, _setHistoryPosition] = useState({ current: 0, total: 0 });
 
   // ── Check First Visit ────────────────────────────────────
 

@@ -1,4 +1,3 @@
-import React from "react";
 import type { AgentTask, AgentStatus } from "../../types";
 
 interface AgentStatusPanelProps {

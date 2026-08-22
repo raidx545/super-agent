@@ -95,17 +95,17 @@ export async function loadModel(
 
   if (modelName === "all") {
     await Promise.all([
-      loadSingleModel("paddleOcrDet", MODEL_CONFIG.paddleOcr.det, backend, onProgress),
-      loadSingleModel("paddleOcrRec", MODEL_CONFIG.paddleOcr.rec, backend, onProgress),
+      loadSingleModel("paddleOcrDet", MODEL_CONFIG.paddleOcr.det as any, backend, onProgress),
+      loadSingleModel("paddleOcrRec", MODEL_CONFIG.paddleOcr.rec as any, backend, onProgress),
       loadSingleModel("uiDetector", MODEL_CONFIG.uiDetection, backend, onProgress),
     ]);
   } else {
     const configMap = {
-      paddleOcrDet: MODEL_CONFIG.paddleOcr.det,
-      paddleOcrRec: MODEL_CONFIG.paddleOcr.rec,
+      paddleOcrDet: MODEL_CONFIG.paddleOcr.det as any,
+      paddleOcrRec: MODEL_CONFIG.paddleOcr.rec as any,
       uiDetector: MODEL_CONFIG.uiDetection,
     };
-    await loadSingleModel(modelName, configMap[modelName], backend, onProgress);
+    await loadSingleModel(modelName, configMap[modelName as keyof typeof configMap] || MODEL_CONFIG.uiDetection, backend, onProgress);
   }
 
   log("All requested models loaded");

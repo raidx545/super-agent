@@ -11,7 +11,7 @@
 export async function captureViewport(): Promise<HTMLCanvasElement | null> {
   try {
     // Use Chrome's tabCapture API to get the visible tab
-    const stream = await chrome.tabCapture.capture({
+    const stream = await (chrome.tabCapture as any).capture({
       video: true,
       videoConstraints: {
         mandatory: {
@@ -45,7 +45,9 @@ export async function captureViewport(): Promise<HTMLCanvasElement | null> {
     ctx.drawImage(video, 0, 0);
 
     // Stop the stream
-    stream.getTracks().forEach((track) => track.stop());
+    if (stream) {
+      (stream as MediaStream).getTracks().forEach((track: MediaStreamTrack) => track.stop());
+    }
     video.srcObject = null;
 
     return canvas;
@@ -72,8 +74,9 @@ export async function captureElement(
     const ctx = canvas.getContext("2d")!;
     ctx.scale(dpr, dpr);
 
-    // Get element's computed styles
-    const style = window.getComputedStyle(element);
+    // Use html2canvas-like approach: render element to canvas
+    // For a production app, we'd use a proper library like html2canvas
+    // For now, we use a simpler approach with SVG foreignObject
 
     // Use html2canvas-like approach: render element to canvas
     // For a production app, we'd use a proper library like html2canvas
