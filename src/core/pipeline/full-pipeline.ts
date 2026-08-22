@@ -416,14 +416,52 @@ export async function executePlanSteps(
       step.action.value = dataContext[target] || step.action.value || "";
     }
 
-    // Execute via content script
-    const result = await sendToContentScript("EXECUTE_ACTION", step.action);
+    // Multi-strategy execution with fallbacks
+    let result: any = null;
+    let lastError = "";
+
+    // Strategy 1: Direct execution
+    result = await sendToContentScript("EXECUTE_ACTION", step.action);
+
+    // Strategy 2: If click failed, try with XPath fallback
+    if (!result?.success && step.action.type === "click" && step.action.target) {
+      const xpathResult = await sendToContentScript("EXECUTE_ACTION", {
+        ...step.action,
+        target: `xpath=//button[contains(text(),'${step.action.target}')] | //a[contains(text(),'${step.action.target}')]`,
+      });
+      if (xpathResult?.success) result = xpathResult;
+    }
+
+    // Strategy 3: If type failed, try clearing and retyping
+    if (!result?.success && step.action.type === "type") {
+      // First click to focus, then type
+      const clickResult = await sendToContentScript("EXECUTE_ACTION", {
+        type: "click",
+        target: step.action.target,
+        retries: 0,
+        maxRetries: 1,
+      });
+      if (clickResult?.success) {
+        await new Promise((r) => setTimeout(r, 200));
+        result = await sendToContentScript("EXECUTE_ACTION", step.action);
+      }
+    }
+
+    // Strategy 4: If still failed, try with text content match
+    if (!result?.success && step.action.target) {
+      const textResult = await sendToContentScript("EXECUTE_ACTION", {
+        ...step.action,
+        target: step.action.value || step.action.target,
+      });
+      if (textResult?.success) result = textResult;
+    }
 
     if (result?.success) {
       completed++;
     } else {
-      errors.push(`Step ${step.index}: ${result?.error || "Unknown error"}`);
-      if (errors.length > 3) break; // Stop after 3 failures
+      lastError = result?.error || "Unknown error";
+      errors.push(`Step ${step.index}: ${lastError}`);
+      if (errors.length > 3) break; // Stop after 3 consecutive failures
     }
 
     // Brief pause between actions (human-like pacing)

@@ -142,68 +142,66 @@ function applyGaussianBlur(
   const imageData = ctx.getImageData(x, y, w, h);
   const data = imageData.data;
 
-  // Apply 3-pass box blur (approximates Gaussian)
-  for (let pass = 0; pass < 3; pass++) {
-    boxBlur(data, w, h, radius);
+  // Build real Gaussian kernel (not box blur approximation)
+  const kernelSize = radius * 2 + 1;
+  const kernel = new Float32Array(kernelSize);
+  const sigma = radius / 3; // Standard deviation
+  let sum = 0;
+  for (let i = 0; i < kernelSize; i++) {
+    const x = i - radius;
+    kernel[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
+    sum += kernel[i];
   }
+  // Normalize kernel
+  for (let i = 0; i < kernelSize; i++) kernel[i] /= sum;
 
-  // Write back
-  ctx.putImageData(imageData, x, y);
-}
-
-function boxBlur(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  radius: number
-): void {
-  // Horizontal pass
+  // Separable Gaussian: horizontal pass then vertical pass
   const temp = new Uint8ClampedArray(data.length);
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let r = 0, g = 0, b = 0, a = 0, count = 0;
-
-      for (let dx = -radius; dx <= radius; dx++) {
-        const nx = Math.min(width - 1, Math.max(0, x + dx));
-        const idx = (y * width + nx) * 4;
-        r += data[idx];
-        g += data[idx + 1];
-        b += data[idx + 2];
-        a += data[idx + 3];
-        count++;
+  // Horizontal pass
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < w; col++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = 0; k < kernelSize; k++) {
+        const nx = Math.min(w - 1, Math.max(0, col + k - radius));
+        const idx = (row * w + nx) * 4;
+        const weight = kernel[k];
+        r += data[idx] * weight;
+        g += data[idx + 1] * weight;
+        b += data[idx + 2] * weight;
+        a += data[idx + 3] * weight;
       }
-
-      const idx = (y * width + x) * 4;
-      temp[idx] = r / count;
-      temp[idx + 1] = g / count;
-      temp[idx + 2] = b / count;
-      temp[idx + 3] = a / count;
+      const idx = (row * w + col) * 4;
+      temp[idx] = r;
+      temp[idx + 1] = g;
+      temp[idx + 2] = b;
+      temp[idx + 3] = a;
     }
   }
 
   // Vertical pass
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let r = 0, g = 0, b = 0, a = 0, count = 0;
-
-      for (let dy = -radius; dy <= radius; dy++) {
-        const ny = Math.min(height - 1, Math.max(0, y + dy));
-        const idx = (ny * width + x) * 4;
-        r += temp[idx];
-        g += temp[idx + 1];
-        b += temp[idx + 2];
-        a += temp[idx + 3];
-        count++;
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < w; col++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = 0; k < kernelSize; k++) {
+        const ny = Math.min(h - 1, Math.max(0, row + k - radius));
+        const idx = (ny * w + col) * 4;
+        const weight = kernel[k];
+        r += temp[idx] * weight;
+        g += temp[idx + 1] * weight;
+        b += temp[idx + 2] * weight;
+        a += temp[idx + 3] * weight;
       }
-
-      const idx = (y * width + x) * 4;
-      data[idx] = r / count;
-      data[idx + 1] = g / count;
-      data[idx + 2] = b / count;
-      data[idx + 3] = a / count;
+      const idx = (row * w + col) * 4;
+      data[idx] = r;
+      data[idx + 1] = g;
+      data[idx + 2] = b;
+      data[idx + 3] = a;
     }
   }
+
+  // Write back
+  ctx.putImageData(imageData, x, y);
 }
 
 // ── Pixelate ─────────────────────────────────────────────────

@@ -20,6 +20,56 @@ export default defineContentScript({
     let overlayContainer: HTMLDivElement | null = null;
     let pipelinePanel: HTMLDivElement | null = null;
 
+    // ── Real-Time DOM Tracking (MutationObserver) ─────────
+    // Tracks DOM changes so the agent knows when the page updates
+    // after an action (e.g., form validation errors, new elements appear)
+
+    let lastDOMSnapshot = "";
+    let domChanged = false;
+    const domChangeCallbacks: Array<() => void> = [];
+
+    const domObserver = new MutationObserver((mutations) => {
+      // Only flag as changed if meaningful elements were added/removed/modified
+      const meaningful = mutations.some((m) => {
+        if (m.type === "childList") return m.addedNodes.length > 0 || m.removedNodes.length > 0;
+        if (m.type === "attributes") return m.attributeName === "class" || m.attributeName === "style" || m.attributeName === "value";
+        return false;
+      });
+      if (meaningful) {
+        domChanged = true;
+        domChangeCallbacks.forEach((cb) => cb());
+      }
+    });
+
+    // Start observing
+    domObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "value", "disabled", "hidden"],
+    });
+
+    function waitForDOMChange(timeoutMs = 3000): Promise<boolean> {
+      return new Promise((resolve) => {
+        if (domChanged) {
+          domChanged = false;
+          resolve(true);
+          return;
+        }
+        const timer = setTimeout(() => {
+          domChangeCallbacks.splice(domChangeCallbacks.indexOf(cb), 1);
+          resolve(false);
+        }, timeoutMs);
+        const cb = () => {
+          clearTimeout(timer);
+          domChangeCallbacks.splice(domChangeCallbacks.indexOf(cb), 1);
+          domChanged = false;
+          resolve(true);
+        };
+        domChangeCallbacks.push(cb);
+      });
+    }
+
     // ── Message Router ─────────────────────────────────────
 
     chrome.runtime.onMessage.addListener(
@@ -881,9 +931,9 @@ export default defineContentScript({
         if (input) return input;
       }
 
-      // Strategy 7: Text content match (buttons, links)
+      // Strategy 7: Exact text match (buttons, links)
       const textEls = document.querySelectorAll(
-        "button, a, [role='button'], [role='link']"
+        "button, a, [role='button'], [role='link'], [role='tab'], [role='menuitem']"
       );
       const lower = target.toLowerCase();
 
@@ -891,19 +941,63 @@ export default defineContentScript({
         const text = el.textContent?.trim().toLowerCase() || "";
         if (text === lower && isVisible(el)) return el;
       }
+      // Strategy 8: Contains match
       for (const el of textEls) {
         const text = el.textContent?.trim().toLowerCase() || "";
         if (text.includes(lower) && isVisible(el)) return el;
       }
 
-      // Strategy 8: Fuzzy match
+      // Strategy 9: Word overlap match (all target words must appear)
       const words = lower.split(/\s+/);
       for (const el of textEls) {
         const text = el.textContent?.trim().toLowerCase() || "";
         if (words.every((w) => text.includes(w)) && isVisible(el)) return el;
       }
 
+      // Strategy 10: Levenshtein fuzzy match (handles typos)
+      let bestMatch: Element | null = null;
+      let bestDistance = Infinity;
+      const maxDistance = Math.max(2, Math.floor(lower.length * 0.3)); // Allow 30% typos
+
+      for (const el of textEls) {
+        const text = el.textContent?.trim().toLowerCase() || "";
+        if (!text || !isVisible(el)) continue;
+        const distance = levenshtein(lower, text.slice(0, lower.length + 5));
+        if (distance < bestDistance && distance <= maxDistance) {
+          bestDistance = distance;
+          bestMatch = el;
+        }
+      }
+      if (bestMatch) return bestMatch;
+
+      // Strategy 11: Title/alt attribute match
+      const byTitle = document.querySelector(`[title*="${target}"]`);
+      if (byTitle && isVisible(byTitle)) return byTitle;
+
+      const byAlt = document.querySelector(`[alt*="${target}"]`);
+      if (byAlt && isVisible(byAlt)) return byAlt;
+
       return null;
+    }
+
+    // Levenshtein distance for fuzzy matching
+    function levenshtein(a: string, b: string): number {
+      if (a.length === 0) return b.length;
+      if (b.length === 0) return a.length;
+      const matrix: number[][] = [];
+      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          const cost = b.charAt(i - 1) === a.charAt(j - 1) ? 0 : 1;
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j - 1] + cost
+          );
+        }
+      }
+      return matrix[b.length][a.length];
     }
 
     function isVisible(el: Element): boolean {
