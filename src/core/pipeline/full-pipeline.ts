@@ -162,26 +162,45 @@ export async function executeFullPipeline(
       return buildErrorResult("Content script not available. Reload the page.", steps, startTime);
     }
     captureStep.details = `${domData.elements.length} elements, ${domData.forms.length} forms`;
-    captureStep.status = "complete";
-    captureStep.latencyMs = 0; // Will be set by content script timing
 
     // Capture screenshot (best effort — may fail on some pages)
+    let screenshotDataUrl: string | null = null;
     try {
       const screenshot = await sendToContentScript("CAPTURE_SCREENSHOT", null);
-      if (screenshot?.success) {
-        captureStep.details += `, screenshot captured`;
+      if (screenshot?.success && screenshot.dataUrl) {
+        screenshotDataUrl = screenshot.dataUrl;
+        captureStep.details += ", screenshot captured";
       }
     } catch {
       // Screenshot is optional — DOM-only path still works
     }
+    captureStep.status = "complete";
 
     // ════════════════════════════════════════════════════════
-    // PHASE 2: DETECT PII — Multi-signal detection
+    // PHASE 2: DETECT PII — Multi-signal (DOM + OCR)
     // ════════════════════════════════════════════════════════
 
     const detectStep = addStep("detect_pii");
+
+    // Run OCR on screenshot if available
+    let ocrTextBlocks: Array<{ text: string; confidence: number; boundingBox: { x: number; y: number; width: number; height: number } }> = [];
+    if (screenshotDataUrl) {
+      try {
+        const { getVisionPipeline } = await import("../models/vision-pipeline");
+        const visionPipeline = getVisionPipeline();
+        if (visionPipeline.isReady()) {
+          const visionResult = await visionPipeline.processScreenshot(screenshotDataUrl);
+          ocrTextBlocks = visionResult.textBlocks;
+          if (ocrTextBlocks.length > 0) {
+            detectStep.details = `OCR: ${ocrTextBlocks.length} text regions detected`;
+          }
+        }
+      } catch {
+        // OCR is optional — DOM detection still works
+      }
+    }
     const detectionResult = await runStep(detectStep, async () => {
-      return detectAllPII(domData);
+      return detectAllPII(domData, undefined, ocrTextBlocks.length > 0 ? ocrTextBlocks : undefined);
     });
 
     if (detectionResult) {
@@ -222,6 +241,20 @@ export async function executeFullPipeline(
         },
       });
       redactionSummary.overlayShown = true;
+
+      // Canvas redaction on screenshot (if available)
+      if (screenshotDataUrl) {
+        try {
+          const { redactScreenshot } = await import("../privacy/screenshot-redactor");
+          const redacted = await redactScreenshot(screenshotDataUrl, piiDetection.regions);
+          if (redacted.regionsRedacted > 0) {
+            redactionSummary.totalPII = redacted.regionsRedacted;
+            redactionSummary.redacted = redacted.regionsRedacted;
+          }
+        } catch {
+          // Canvas redaction is optional
+        }
+      }
 
       return true;
     });
@@ -287,7 +320,22 @@ export async function executeFullPipeline(
     }
 
     // ════════════════════════════════════════════════════════
-    // PHASE 7: SHOW PIPELINE STATUS PANEL
+    // PHASE 7: EXECUTE — Run plan steps via content script
+    // ════════════════════════════════════════════════════════
+
+    let executionResult: { success: boolean; completed: number; total: number; errors: string[] } | null = null;
+    if (planResult.steps.length > 0) {
+      const execStep = addStep("execute");
+      execStep.status = "running";
+      const { executePlanSteps } = await import("./full-pipeline");
+      executionResult = await executePlanSteps(planResult.steps, input.dataContext);
+      execStep.status = executionResult.success ? "complete" : "error";
+      execStep.details = `${executionResult.completed}/${executionResult.total} steps` +
+        (executionResult.errors.length > 0 ? ` (${executionResult.errors.length} errors)` : "");
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 8: SHOW PIPELINE STATUS PANEL
     // ════════════════════════════════════════════════════════
 
     await sendToContentScript("SHOW_PIPELINE_PANEL", {

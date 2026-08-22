@@ -10,9 +10,9 @@
 // ============================================================
 
 import { extractPageState, isDOMSufficient } from "./dom-extractor";
-import { getVisionPipeline, type VisionResult } from "../models/vision-pipeline";
+import { getVisionPipeline } from "../models/vision-pipeline";
 import { getModelManager } from "../models/model-manager";
-import type { PageState, PageElement } from "../../types";
+import type { PageState } from "../../types";
 
 // ── Perceiver Output ─────────────────────────────────────────
 
@@ -83,14 +83,14 @@ export class HybridPerceiver {
     // Step 4: DOM insufficient — try vision pipeline
     if (modelsReady) {
       try {
-        // Capture screenshot
-        const canvas = await this.captureScreenshot(tabId);
-        if (canvas) {
+        // Capture screenshot as data URL
+        const screenshotDataUrl = await this.captureScreenshotAsDataUrl(tabId);
+        if (screenshotDataUrl) {
           // Run vision models
-          const visionResult = await this.visionPipeline.processScreenshot(canvas);
+          const visionResult = await this.visionPipeline.processScreenshot(screenshotDataUrl);
 
-          // Merge DOM + Vision (hybrid)
-          const mergedState = this.mergeResults(domState, visionResult);
+          // Merge DOM text blocks into page state
+          const mergedState = this.mergeOCRText(domState, visionResult.textBlocks);
 
           const result: PerceptionResult = {
             pageState: mergedState,
@@ -223,12 +223,11 @@ export class HybridPerceiver {
 
   // ── Screenshot Capture ─────────────────────────────────
 
-  private async captureScreenshot(tabId?: number): Promise<HTMLCanvasElement | null> {
+  private async captureScreenshotAsDataUrl(tabId?: number): Promise<string | null> {
     try {
       const targetTabId = tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
       if (!targetTabId) return null;
 
-      // Use chrome.tabCapture to capture the visible tab
       const stream = await (chrome.tabCapture as any).capture({
         video: true,
         videoConstraints: {
@@ -242,6 +241,7 @@ export class HybridPerceiver {
 
       if (!stream) return null;
 
+      // Use OffscreenCanvas to convert to data URL (service worker compatible)
       const video = document.createElement("video");
       video.srcObject = stream;
       video.muted = true;
@@ -262,7 +262,7 @@ export class HybridPerceiver {
       stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
       video.srcObject = null;
 
-      return canvas;
+      return canvas.toDataURL("image/png");
     } catch {
       return null;
     }
@@ -270,51 +270,20 @@ export class HybridPerceiver {
 
   // ── Hybrid Merge ──────────────────────────────────────
 
-  private mergeResults(domState: PageState, visionResult: VisionResult): PageState {
-    const mergedElements: PageElement[] = [...domState.elements];
-
-    // Add vision-detected elements that don't overlap with DOM elements
-    for (const vEl of visionResult.elements) {
-      const overlaps = domState.elements.some((dEl) => {
-        const overlap = this.computeIoU(
-          { x: dEl.rect.x, y: dEl.rect.y, width: dEl.rect.width, height: dEl.rect.height },
-          { x: vEl.rect.x, y: vEl.rect.y, width: vEl.rect.width, height: vEl.rect.height }
-        );
-        return overlap > 0.3;
-      });
-
-      if (!overlaps) {
-        mergedElements.push(vEl);
-      }
-    }
-
-    // Merge text blocks into text content
-    const visionText = visionResult.textBlocks.map((b) => b.text).join(" ");
+  private mergeOCRText(domState: PageState, textBlocks: Array<{ text: string; confidence: number; boundingBox: { x: number; y: number; width: number; height: number } }>): PageState {
+    // Merge OCR text blocks into page text content
+    const visionText = textBlocks.map((b) => b.text).join(" ");
     const mergedText = domState.textContent
       ? `${domState.textContent} ${visionText}`
       : visionText;
 
     return {
       ...domState,
-      elements: mergedElements,
       textContent: mergedText.slice(0, 10000),
-      confidence: Math.max(domState.confidence, visionResult.confidence),
-      perceptionTime: domState.perceptionTime + visionResult.inferenceTime,
+      confidence: Math.max(domState.confidence, 0.8),
     };
   }
 
-  private computeIoU(
-    a: { x: number; y: number; width: number; height: number },
-    b: { x: number; y: number; width: number; height: number }
-  ): number {
-    const x1 = Math.max(a.x, b.x);
-    const y1 = Math.max(a.y, b.y);
-    const x2 = Math.min(a.x + a.width, b.x + b.width);
-    const y2 = Math.min(a.y + a.height, b.y + b.height);
-    const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-    const union = a.width * a.height + b.width * b.height - intersection;
-    return union > 0 ? intersection / union : 0;
-  }
 }
 
 // ── Singleton ────────────────────────────────────────────────

@@ -15,7 +15,8 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "fmt": "prettier --write src/",
-    "models": "node scripts/download-models.mjs"
+    "models": "node scripts/download-models.mjs",
+    "server": "node server/index.js"
   },
   "dependencies": {
     "idb": "^8.0.0",

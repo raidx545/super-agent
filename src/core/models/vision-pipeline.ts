@@ -1,19 +1,17 @@
 // ============================================================
-// VLESS — Vision Pipeline
-// Processes screenshots through ONNX models to extract:
-// - Text content (PaddleOCR)
-// - UI elements (UI Detector)
-// - Page structure (combined)
-// Falls back gracefully when models aren't loaded
+// VLESS — Vision Pipeline (Service Worker Compatible)
+// Processes screenshots through ONNX models to extract text.
+// Uses OffscreenCanvas for image processing (works in service workers).
+//
+// Pipeline: Screenshot -> Preprocess -> PaddleOCR Det -> Crop -> PaddleOCR Rec -> Text Blocks
+// Falls back gracefully when models aren't loaded.
 // ============================================================
 
 import { getModelManager, type ModelProgress } from "./model-manager";
-import type { PageElement } from "../../types";
 
-// ── Pipeline Output ──────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────
 
 export interface VisionResult {
-  elements: PageElement[];
   textBlocks: TextBlock[];
   inferenceTime: number;
   modelsUsed: string[];
@@ -26,174 +24,213 @@ export interface TextBlock {
   boundingBox: { x: number; y: number; width: number; height: number };
 }
 
+// ── Lazy ORT import ──────────────────────────────────────────
+
+let ort: typeof import("onnxruntime-web") | null = null;
+
+async function getOrt(): Promise<typeof import("onnxruntime-web")> {
+  if (!ort) {
+    ort = await import("onnxruntime-web");
+  }
+  return ort;
+}
+
 // ── Vision Pipeline ──────────────────────────────────────────
 
 export class VisionPipeline {
   private manager = getModelManager();
+  private modelsReady = false;
 
   /**
-   * Process a screenshot canvas through all available vision models.
+   * Initialize models. Call once on startup.
    */
-  async processScreenshot(
-    canvas: HTMLCanvasElement,
-    _onProgress?: (progress: ModelProgress) => void
-  ): Promise<VisionResult> {
+  async initialize(onProgress?: (progress: ModelProgress) => void): Promise<void> {
+    try {
+      await this.manager.loadAll(onProgress);
+      this.modelsReady = true;
+      console.log("[VLESS] Vision models loaded");
+    } catch (error) {
+      console.warn("[VLESS] Vision model loading failed:", error);
+      this.modelsReady = false;
+    }
+  }
+
+  /**
+   * Check if models are ready for inference.
+   */
+  isReady(): boolean {
+    return this.modelsReady && this.manager.areRequiredModelsReady();
+  }
+
+  /**
+   * Process a screenshot data URL through OCR.
+   * Accepts a data URL string (from tabCapture).
+   * Returns detected text blocks with bounding boxes.
+   */
+  async processScreenshot(dataUrl: string): Promise<VisionResult> {
+    if (!this.isReady()) {
+      return { textBlocks: [], inferenceTime: 0, modelsUsed: [], confidence: 0 };
+    }
+
     const startTime = performance.now();
-    const elements: PageElement[] = [];
     const textBlocks: TextBlock[] = [];
     const modelsUsed: string[] = [];
 
-    // Step 1: OCR — Extract all text with positions
-    if (this.manager.isModelReady("ppocr-det-v3") && (this.manager.isModelReady("ppocr-rec-en") || this.manager.isModelReady("ppocr-rec-hi"))) {
-      try {
-        const ocrResult = await this.runOCR(canvas);
-        textBlocks.push(...ocrResult);
-        modelsUsed.push("ppocr");
+    try {
+      // Convert data URL to ImageBitmap (works in service workers)
+      const bitmap = await dataUrlToImageBitmap(dataUrl);
 
-        // Convert text blocks to PageElements
-        for (const block of ocrResult) {
-          elements.push({
-            id: `vision-text-${elements.length}`,
-            tag: "span",
-            role: "text",
-            text: block.text,
-            label: block.text,
-            placeholder: "",
-            ariaLabel: "",
-            type: "text",
-            rect: block.boundingBox as any,
-            isVisible: true,
-            isInteractive: false,
-            isDisabled: false,
-            confidence: block.confidence,
-            source: "vision",
-          });
-        }
-      } catch (error) {
-        console.error("🐾 [VisionPipeline] OCR failed:", error);
+      // Step 1: Run text detection
+      const detSession = this.manager.getSession("ppocr-det-v3");
+      if (!detSession) {
+        return { textBlocks: [], inferenceTime: performance.now() - startTime, modelsUsed: [], confidence: 0 };
       }
-    }
 
-    // Step 2: Merge overlapping elements
-    const merged = this.mergeOverlappingElements(elements);
+      const detTensor = await this.preprocessForDetection(bitmap, 640, 640);
+      const detResults = await detSession.run({ input: detTensor });
+      const detOutput = Object.values(detResults)[0];
+      const detData = detOutput.data as Float32Array;
+
+      // Parse detection boxes
+      const boxes = this.parseDetectionBoxes(detData, bitmap.width, bitmap.height);
+      modelsUsed.push("ppocr-det");
+
+      // Step 2: Run text recognition on each detected region
+      const recSession = this.manager.getSession("ppocr-rec-en") || this.manager.getSession("ppocr-rec-hi");
+      if (!recSession) {
+        // Detection worked but no recognition model
+        return {
+          textBlocks: boxes.map((b) => ({
+            text: `[detected region ${Math.round(b.x)},${Math.round(b.y)}]`,
+            confidence: b.confidence,
+            boundingBox: { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) },
+          })),
+          inferenceTime: performance.now() - startTime,
+          modelsUsed,
+          confidence: 0.5,
+        };
+      }
+
+      modelsUsed.push("ppocr-rec");
+
+      // Process top 30 detected regions
+      for (const box of boxes.slice(0, 30)) {
+        try {
+          // Crop the detected region from the bitmap
+          const croppedBitmap = await cropImageBitmap(
+            bitmap,
+            Math.max(0, Math.round(box.x)),
+            Math.max(0, Math.round(box.y)),
+            Math.min(Math.round(box.width), bitmap.width - Math.round(box.x)),
+            Math.min(Math.round(box.height), bitmap.height - Math.round(box.y))
+          );
+
+          if (croppedBitmap.width < 2 || croppedBitmap.height < 2) continue;
+
+          // Preprocess for recognition
+          const recTensor = await this.preprocessForRecognition(croppedBitmap, 32, 320);
+
+          // Run recognition
+          const recResults = await recSession.run({ input: recTensor });
+          const recOutput = Object.values(recResults)[0];
+          const text = this.decodeCTCOutput(recOutput.data as Float32Array);
+
+          if (text.trim().length > 0) {
+            textBlocks.push({
+              text: text.trim(),
+              confidence: box.confidence,
+              boundingBox: {
+                x: Math.round(box.x),
+                y: Math.round(box.y),
+                width: Math.round(box.width),
+                height: Math.round(box.height),
+              },
+            });
+          }
+        } catch {
+          // Skip failed region
+        }
+      }
+    } catch (error) {
+      console.error("[VLESS] Vision pipeline error:", error);
+    }
 
     const inferenceTime = performance.now() - startTime;
 
     return {
-      elements: merged,
       textBlocks,
       inferenceTime,
       modelsUsed,
-      confidence: merged.length > 0 ? 0.8 : 0.3,
+      confidence: textBlocks.length > 0 ? 0.8 : 0.3,
     };
-  }
-
-  /**
-   * Run OCR on a screenshot to extract all text with positions.
-   */
-  private async runOCR(canvas: HTMLCanvasElement): Promise<TextBlock[]> {
-    const detSession = this.manager.getSession("ppocr-det-v3");
-    const recSession = this.manager.getSession("ppocr-rec-en") || this.manager.getSession("ppocr-rec-hi");
-    if (!detSession || !recSession) return [];
-
-    // Preprocess image for detection model
-    const detInput = this.preprocessImage(canvas, [1, 3, 640, 640]);
-
-    // Run detection
-    const detResults = await detSession.run({ input: detInput });
-    const detOutput = detResults.output || detResults[Object.keys(detResults)[0]];
-
-    // Parse detection boxes
-    const boxes = this.parseDetectionBoxes(detOutput.data as Float32Array, canvas.width, canvas.height);
-
-    // For each detected text region, run recognition
-    const textBlocks: TextBlock[] = [];
-
-    for (const box of boxes.slice(0, 20)) { // Limit to 20 regions
-      try {
-        // Crop region from canvas
-        const cropped = this.cropCanvas(
-          canvas,
-          Math.max(0, box.x),
-          Math.max(0, box.y),
-          Math.min(box.width, canvas.width - box.x),
-          Math.min(box.height, canvas.height - box.y)
-        );
-
-        if (cropped.width < 1 || cropped.height < 1) continue;
-
-        // Preprocess for recognition
-        const recInput = this.preprocessImage(cropped, [1, 3, 32, 320]);
-
-        // Run recognition
-        const recResults = await recSession.run({ input: recInput });
-        const recOutput = recResults.output || recResults[Object.keys(recResults)[0]];
-
-        // Decode text
-        const text = this.decodeCTCOutput(recOutput.data as Float32Array);
-        if (text.trim()) {
-          textBlocks.push({
-            text: text.trim(),
-            confidence: box.confidence,
-            boundingBox: {
-              x: Math.round(box.x),
-              y: Math.round(box.y),
-              width: Math.round(box.width),
-              height: Math.round(box.height),
-            },
-          });
-        }
-      } catch {
-        // Skip failed recognition
-      }
-    }
-
-    return textBlocks;
   }
 
   // ── Preprocessing ──────────────────────────────────────
 
-  private preprocessImage(
-    canvas: HTMLCanvasElement,
-    targetShape: number[]
-  ): any {
-    const [, channels, height, width] = targetShape;
+  private async preprocessForDetection(
+    bitmap: ImageBitmap,
+    targetW: number,
+    targetH: number
+  ): Promise<any> {
+    const ortModule = await getOrt();
 
-    // Resize canvas to target dimensions
-    const resized = document.createElement("canvas");
-    resized.width = width;
-    resized.height = height;
-    const ctx = resized.getContext("2d")!;
-    ctx.drawImage(canvas, 0, 0, width, height);
+    // Use OffscreenCanvas for preprocessing
+    const canvas = new OffscreenCanvas(targetW, targetH);
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
 
-    // Get pixel data
-    const imageData = ctx.getImageData(0, 0, width, height);
+    const imageData = ctx.getImageData(0, 0, targetW, targetH);
     const pixels = imageData.data;
 
-    // Convert to NCHW format with ImageNet normalization
-    const tensorData = new Float32Array(channels * height * width);
+    // NCHW format with PaddleOCR normalization (0-1 range, no ImageNet mean/std)
+    const tensorData = new Float32Array(3 * targetH * targetW);
 
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const pixelIdx = (y * width + x) * 4;
-        const r = pixels[pixelIdx] / 255;
-        const g = pixels[pixelIdx + 1] / 255;
-        const b = pixels[pixelIdx + 2] / 255;
+    for (let y = 0; y < targetH; y++) {
+      for (let x = 0; x < targetW; x++) {
+        const idx = (y * targetW + x) * 4;
+        const r = pixels[idx] / 255;
+        const g = pixels[idx + 1] / 255;
+        const b = pixels[idx + 2] / 255;
 
-        // ImageNet normalization
-        tensorData[0 * height * width + y * width + x] = (r - 0.485) / 0.229;
-        tensorData[1 * height * width + y * width + x] = (g - 0.456) / 0.224;
-        tensorData[2 * height * width + y * width + x] = (b - 0.406) / 0.225;
+        tensorData[0 * targetH * targetW + y * targetW + x] = r;
+        tensorData[1 * targetH * targetW + y * targetW + x] = g;
+        tensorData[2 * targetH * targetW + y * targetW + x] = b;
       }
     }
 
-    // Create tensor for ONNX inference
-    try {
-      // @ts-ignore — ort is imported at top of file
-      return new ort.Tensor("float32", tensorData, targetShape);
-    } catch {
-      return { data: tensorData, dims: targetShape, type: "float32" } as any;
+    return new ortModule.Tensor("float32", tensorData, [1, 3, targetH, targetW]) as any;
+  }
+
+  private async preprocessForRecognition(
+    bitmap: ImageBitmap,
+    targetH: number,
+    targetW: number
+  ): Promise<any> {
+    const ortModule = await getOrt();
+
+    const canvas = new OffscreenCanvas(targetW, targetH);
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+
+    const imageData = ctx.getImageData(0, 0, targetW, targetH);
+    const pixels = imageData.data;
+
+    const tensorData = new Float32Array(3 * targetH * targetW);
+
+    for (let y = 0; y < targetH; y++) {
+      for (let x = 0; x < targetW; x++) {
+        const idx = (y * targetW + x) * 4;
+        const r = pixels[idx] / 255;
+        const g = pixels[idx + 1] / 255;
+        const b = pixels[idx + 2] / 255;
+
+        tensorData[0 * targetH * targetW + y * targetW + x] = r;
+        tensorData[1 * targetH * targetW + y * targetW + x] = g;
+        tensorData[2 * targetH * targetW + y * targetW + x] = b;
+      }
     }
+
+    return new ortModule.Tensor("float32", tensorData, [1, 3, targetH, targetW]) as any;
   }
 
   // ── Post-processing ────────────────────────────────────
@@ -207,10 +244,12 @@ export class VisionPipeline {
     const scaleX = origWidth / 640;
     const scaleY = origHeight / 640;
 
-    // Standard detection output: [x1, y1, x2, y2, confidence, class_id]
-    for (let i = 0; i < data.length; i += 6) {
+    // PaddleOCR detection output format varies by version
+    // Try standard format: [x1, y1, x2, y2, confidence]
+    const valuesPerBox = 5;
+    for (let i = 0; i + valuesPerBox <= data.length; i += valuesPerBox) {
       const confidence = data[i + 4];
-      if (confidence < 0.4) continue;
+      if (confidence < 0.3) continue;
 
       boxes.push({
         x: data[i] * scaleX,
@@ -221,10 +260,10 @@ export class VisionPipeline {
       });
     }
 
-    // Sort by confidence
+    // Sort by confidence descending
     boxes.sort((a, b) => b.confidence - a.confidence);
 
-    // Non-maximum suppression (simple)
+    // Non-maximum suppression
     return this.nms(boxes, 0.5);
   }
 
@@ -266,74 +305,76 @@ export class VisionPipeline {
   }
 
   private decodeCTCOutput(data: Float32Array): string {
+    // PaddleOCR character set
     const vocab = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .,;:!?-()[]{}'\"/\\@#$%^&*";
     let text = "";
     let lastIdx = -1;
 
-    for (let i = 0; i < data.length; i++) {
-      const charIdx = Math.round(data[i]);
-      if (charIdx === 0 || charIdx === lastIdx) continue;
-      lastIdx = charIdx;
-      if (charIdx > 0 && charIdx <= vocab.length) {
-        text += vocab[charIdx - 1];
+    // data shape: [1, num_classes, seq_len] or [num_classes * seq_len]
+    // For CTC output, we take argmax along the class dimension
+    const numClasses = vocab.length + 1; // +1 for blank token
+
+    // Determine if output is [1, num_classes, seq_len] or flat
+    let seqLen: number;
+    let stride: number;
+
+    if (data.length % numClasses === 0) {
+      // [num_classes, seq_len] format
+      seqLen = data.length / numClasses;
+      stride = numClasses;
+    } else {
+      // Flat format — assume sequential
+      seqLen = data.length;
+      stride = 1;
+    }
+
+    for (let t = 0; t < seqLen; t++) {
+      // Find argmax
+      let maxIdx = 0;
+      let maxVal = -Infinity;
+
+      for (let c = 0; c < numClasses && t * stride + c < data.length; c++) {
+        const val = data[t * stride + c];
+        if (val > maxVal) {
+          maxVal = val;
+          maxIdx = c;
+        }
+      }
+
+      // Skip blank (index 0) and repeated characters
+      if (maxIdx === 0 || maxIdx === lastIdx) continue;
+      lastIdx = maxIdx;
+
+      // Map to character
+      if (maxIdx - 1 < vocab.length) {
+        text += vocab[maxIdx - 1];
       }
     }
 
     return text.trim();
   }
+}
 
-  private cropCanvas(
-    source: HTMLCanvasElement,
-    x: number,
-    y: number,
-    width: number,
-    height: number
-  ): HTMLCanvasElement {
-    const cropped = document.createElement("canvas");
-    cropped.width = Math.max(1, Math.round(width));
-    cropped.height = Math.max(1, Math.round(height));
-    const ctx = cropped.getContext("2d")!;
-    ctx.drawImage(source, Math.round(x), Math.round(y), cropped.width, cropped.height, 0, 0, cropped.width, cropped.height);
-    return cropped;
-  }
+// ── Image Utilities ──────────────────────────────────────────
 
-  private mergeOverlappingElements(elements: PageElement[]): PageElement[] {
-    if (elements.length <= 1) return elements;
+async function dataUrlToImageBitmap(dataUrl: string): Promise<ImageBitmap> {
+  // Convert data URL to Blob, then to ImageBitmap
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return createImageBitmap(blob);
+}
 
-    const merged: PageElement[] = [];
-    const used = new Set<number>();
-
-    for (let i = 0; i < elements.length; i++) {
-      if (used.has(i)) continue;
-      let best = elements[i];
-
-      for (let j = i + 1; j < elements.length; j++) {
-        if (used.has(j)) continue;
-        if (this.elementsOverlap(best, elements[j])) {
-          // Keep the one with higher confidence
-          if (elements[j].confidence > best.confidence) {
-            used.add(merged.indexOf(best));
-            best = elements[j];
-          } else {
-            used.add(j);
-          }
-        }
-      }
-
-      merged.push(best);
-    }
-
-    return merged;
-  }
-
-  private elementsOverlap(a: PageElement, b: PageElement): boolean {
-    const overlap = this.computeIoU(
-      { x: a.rect.x, y: a.rect.y, width: a.rect.width, height: a.rect.height },
-      { x: b.rect.x, y: b.rect.y, width: b.rect.width, height: b.rect.height }
-    );
-    return overlap > 0.3;
-  }
-
+async function cropImageBitmap(
+  source: ImageBitmap,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): Promise<ImageBitmap> {
+  const canvas = new OffscreenCanvas(Math.max(1, width), Math.max(1, height));
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(source, x, y, width, height, 0, 0, width, height);
+  return createImageBitmap(canvas);
 }
 
 // ── Singleton ────────────────────────────────────────────────
