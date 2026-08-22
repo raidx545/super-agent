@@ -189,6 +189,10 @@ export async function executeFullPipeline(
       try {
         const { getVisionPipeline } = await import("../models/vision-pipeline");
         const visionPipeline = getVisionPipeline();
+        // Initialize models on first run (lazy init — only loads ~18MB on first screenshot)
+        if (!visionPipeline.isReady()) {
+          await visionPipeline.initialize();
+        }
         if (visionPipeline.isReady()) {
           const visionResult = await visionPipeline.processScreenshot(screenshotDataUrl);
           ocrTextBlocks = visionResult.textBlocks;

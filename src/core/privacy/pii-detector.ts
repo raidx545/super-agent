@@ -156,7 +156,7 @@ const PII_RULES: PIIRule[] = [
   {
     category: "bank_account",
     sensitivity: "critical",
-    patterns: [/\b\d{9,18}\b/], // 9-18 digits
+    patterns: [], // No generic regex — only detect via field context to avoid false positives
     fieldPatterns: [/account/i, /acc\s*no/i, /bank\s*acc/i, /a\/c/i],
     keywords: ["account number", "bank account", "a/c"],
     redactionStrategy: "black_box",
@@ -213,7 +213,6 @@ const PII_RULES: PIIRule[] = [
     sensitivity: "critical",
     patterns: [
       /\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b/, // Credit/debit card (16 digits)
-      /\b\d{3}\b/, // CVV (3 digits in financial context)
     ],
     fieldPatterns: [/card/i, /cvv/i, /expiry/i, /credit/i, /debit/i, /billing/i],
     keywords: ["card number", "cvv", "expiry", "credit card", "debit card"],

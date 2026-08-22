@@ -60,6 +60,35 @@ export default defineBackground({
       }
     });
 
+    // ── SW Keepalive ─────────────────────────────────────
+    // MV3 service workers die after ~30s of inactivity.
+    // During long tasks, we ping chrome.alarms to keep alive.
+    let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
+
+    function startKeepalive() {
+      if (keepaliveInterval) return;
+      keepaliveInterval = setInterval(() => {
+        // chrome.alarms keeps the SW alive
+        chrome.alarms.create("keepalive", { when: Date.now() + 20000 });
+      }, 25000);
+      // Also fire immediately
+      chrome.alarms.create("keepalive", { when: Date.now() + 20000 });
+    }
+
+    function stopKeepalive() {
+      if (keepaliveInterval) {
+        clearInterval(keepaliveInterval);
+        keepaliveInterval = null;
+      }
+      chrome.alarms.clear("keepalive").catch(() => {});
+    }
+
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === "keepalive") {
+        // SW is alive — do nothing, just the alarm keeps us going
+      }
+    });
+
     // ── Message Router ───────────────────────────────────
 
     chrome.runtime.onMessage.addListener(
@@ -93,6 +122,11 @@ export default defineBackground({
             message.payload as { description: string; data?: Record<string, string>; tabId?: number }
           );
         case "CANCEL_TASK":
+          if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+          }
+          stopMonitoring();
           return { success: true, message: "Task cancelled" };
         case "PERCEIVE_PAGE":
           return handlePerceivePage();
@@ -123,14 +157,25 @@ export default defineBackground({
     // TASK ORCHESTRATION — The brain of the agent
     // ══════════════════════════════════════════════════════
 
+    // ── Task Abort Controller ──────────────────────────────
+    let currentAbortController: AbortController | null = null;
+
     async function handleStartTask(payload: {
       description: string;
       data?: Record<string, string>;
     }): Promise<AgentTask> {
       console.log(`🐾 Starting task: "${payload.description}"`);
 
-      // Start privacy monitoring
+      // Cancel any running task
+      if (currentAbortController) {
+        currentAbortController.abort();
+      }
+      currentAbortController = new AbortController();
+      const signal = currentAbortController.signal;
+
+      // Start privacy monitoring and keepalive
       startMonitoring();
+      startKeepalive();
       log("discovery", `Starting task: "${payload.description}"`);
 
       const task: AgentTask = {
@@ -151,6 +196,7 @@ export default defineBackground({
         task.status = "failed";
         task.error = "Cannot run on browser pages (chrome://, edge://, etc). Navigate to a website first.";
         task.endTime = Date.now();
+        stopKeepalive();
         broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: true } });
         return task;
       }
@@ -233,6 +279,17 @@ export default defineBackground({
         let stepsCompleted = 0;
 
         for (const step of plan.steps) {
+          // Check if task was cancelled
+          if (signal.aborted) {
+            task.status = "failed";
+            task.error = "Task cancelled by user";
+            task.endTime = Date.now();
+            stopMonitoring();
+            stopKeepalive();
+            broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean() } });
+            return task;
+          }
+
           task.currentStep = step.index;
           broadcast({ type: "TASK_STATUS", payload: task });
           narrateAction(step.action);
@@ -338,6 +395,7 @@ export default defineBackground({
             task.error = lastError;
             task.endTime = Date.now();
             stopMonitoring();
+            stopKeepalive();
             broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean() } });
             return task;
           }
@@ -356,6 +414,7 @@ export default defineBackground({
         log("success", `🎉 Task completed! ${stepsCompleted}/${plan.steps.length} steps in ${elapsed}s`);
 
         const finalStats = stopMonitoring();
+        stopKeepalive();
         log("success", `🔒 Privacy: ${finalStats.outboundRequests} outbound requests, ${finalStats.bytesSent} bytes sent`);
 
         broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean(), privacyStats: finalStats } });
@@ -366,6 +425,7 @@ export default defineBackground({
         task.error = error instanceof Error ? error.message : "Unknown error";
         log("error", `Task failed: ${task.error}`);
         stopMonitoring();
+        stopKeepalive();
         broadcast({ type: "TASK_COMPLETE", payload: { task, privacyClean: isClean() } });
         return task;
       }
@@ -803,51 +863,18 @@ export default defineBackground({
           return { success: false, error: "No active tab" };
         }
 
-        // Use chrome.tabCapture to capture the visible tab
-        const stream = await (chrome.tabCapture as any).capture({
-          video: true,
-          videoConstraints: {
-            mandatory: {
-              chromeMediaSource: "tab",
-              maxWidth: 1920,
-              maxHeight: 1080,
-            },
-          },
+        // chrome.tabs.captureVisibleTab works from MV3 service workers
+        // Returns a PNG data URL of the visible area — no canvas/video needed
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: "png",
+          quality: 80,
         });
-
-        if (!stream) {
-          return { success: false, error: "Failed to capture tab" };
-        }
-
-        // Convert MediaStream to canvas to data URL
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        video.muted = true;
-
-        await new Promise<void>((resolve) => {
-          video.onloadedmetadata = () => {
-            video.play();
-            requestAnimationFrame(() => resolve());
-          };
-        });
-
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext("2d")!;
-        ctx.drawImage(video, 0, 0);
-
-        // Stop the stream
-        stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-        video.srcObject = null;
-
-        const dataUrl = canvas.toDataURL("image/png", 0.8);
 
         return {
           success: true,
           dataUrl,
-          width: canvas.width,
-          height: canvas.height,
+          width: tab.width || 1920,
+          height: tab.height || 1080,
         };
       } catch (error) {
         return {

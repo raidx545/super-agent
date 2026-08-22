@@ -378,7 +378,25 @@ export default defineContentScript({
               input.focus();
               el.scrollIntoView({ behavior: "smooth", block: "center" });
               input.select();
-              input.value = "";
+
+              // Native setter hack: bypasses React/Vue synthetic event system
+              // React overrides the value setter on input elements, so setting
+              // input.value directly doesn't trigger React's onChange handler.
+              // We use the native prototype setter to set the value, then dispatch
+              // an input event so React picks it up.
+              const nativeSetter = (
+                Object.getOwnPropertyDescriptor(
+                  HTMLInputElement.prototype,
+                  "value"
+                ) || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
+              )?.set;
+
+              // Clear existing value
+              if (nativeSetter) {
+                nativeSetter.call(input, "");
+              } else {
+                input.value = "";
+              }
               input.dispatchEvent(new Event("input", { bubbles: true }));
 
               // Human-like typing with realistic delays
@@ -401,7 +419,13 @@ export default defineContentScript({
                     bubbles: true,
                   })
                 );
-                input.value += char;
+                // Use native setter so React/Vue pick up the change
+                const currentValue = input.value;
+                if (nativeSetter) {
+                  nativeSetter.call(input, currentValue + char);
+                } else {
+                  input.value += char;
+                }
                 input.dispatchEvent(
                   new InputEvent("input", {
                     data: char,
