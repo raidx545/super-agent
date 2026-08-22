@@ -385,8 +385,36 @@ export async function executeFullPipeline(
           input.dataContext
         );
       }
+      // Try deterministic planner first (fast, offline, no LLM needed)
+      const { generateDeterministicPlan, isDeterministicEligible } = await import("../agent/deterministic-planner");
+      const allFields = domData.forms.flatMap((f: any) => f.fields);
+      if (isDeterministicEligible(input.taskDescription, allFields.length) && input.dataContext) {
+        console.log("[VLESS] Using deterministic planner (no LLM needed)");
+        const detPlan = generateDeterministicPlan(
+          allFields.map((f: any, i: number) => ({
+            index: i,
+            label: f.label,
+            name: f.name,
+            id: f.id,
+            type: f.type,
+            required: f.required,
+            options: f.options,
+            currentValue: f.value,
+          })),
+          input.dataContext
+        );
+        if (detPlan.success) {
+          return {
+            success: true,
+            steps: detPlan.steps,
+            reasoning: detPlan.reasoning,
+            provider: "deterministic",
+            latencyMs: performance.now() - startTime,
+          };
+        }
+      }
       // Last resort: rule-based (limited to fill/scroll/click/navigate)
-      console.warn("[VLESS] No LLM available — falling back to rule-based planning. Configure an AI provider in Settings for full capability.");
+      console.warn("[VLESS] No LLM available — falling back to rule-based planning.");
       return generateRuleBasedPlan(input.taskDescription, domData, input.dataContext);
     });
 
