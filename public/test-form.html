@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VLESS Test Form — Indian Government Application</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { color: #1e293b; margin-bottom: 8px; font-size: 24px; }
+    .subtitle { color: #64748b; margin-bottom: 24px; font-size: 14px; }
+    .form-card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
+    .form-card h2 { color: #334155; font-size: 18px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .form-row.full { grid-template-columns: 1fr; }
+    .form-group { display: flex; flex-direction: column; }
+    label { font-size: 13px; font-weight: 500; color: #475569; margin-bottom: 6px; }
+    label .required { color: #ef4444; }
+    input, select, textarea {
+      padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px;
+      font-size: 14px; color: #1e293b; background: #f8fafc;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+    }
+    input::placeholder { color: #94a3b8; }
+    .btn-row { display: flex; gap: 12px; margin-top: 24px; }
+    button {
+      padding: 12px 24px; border-radius: 8px; font-size: 14px;
+      font-weight: 500; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-primary { background: #6366f1; color: white; border: none; }
+    .btn-primary:hover { background: #4f46e5; }
+    .btn-secondary { background: white; color: #475569; border: 1px solid #d1d5db; }
+    .btn-secondary:hover { background: #f8fafc; }
+    .section-badge { display: inline-block; background: #eef2ff; color: #6366f1; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-bottom: 12px; }
+    .info-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 13px; color: #92400e; }
+    .vless-status { position: fixed; bottom: 20px; right: 20px; background: #1e293b; color: white; padding: 12px 16px; border-radius: 8px; font-size: 12px; z-index: 999; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🐾 VLESS Test Form</h1>
+    <p class="subtitle">Use this form to test the VLESS browser agent extension</p>
+
+    <div class="info-box">
+      <strong>How to test:</strong> Open the VLESS side panel → Type "Fill this form with test data" → Watch the agent work.
+    </div>
+
+    <form id="applicationForm">
+      <!-- Personal Details -->
+      <div class="form-card">
+        <span class="section-badge">Section 1</span>
+        <h2>Personal Details</h2>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Given Name <span class="required">*</span></label>
+            <input type="text" name="givenName" placeholder="Enter your given name" required>
+          </div>
+          <div class="form-group">
+            <label>Last Name <span class="required">*</span></label>
+            <input type="text" name="lastName" placeholder="Enter your last name" required>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Date of Birth <span class="required">*</span></label>
+            <input type="date" name="dob" required>
+          </div>
+          <div class="form-group">
+            <label>Gender <span class="required">*</span></label>
+            <select name="gender" required>
+              <option value="">Select gender</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Email Address <span class="required">*</span></label>
+            <input type="email" name="email" placeholder="your.email@example.com" required>
+          </div>
+          <div class="form-group">
+            <label>Phone Number <span class="required">*</span></label>
+            <input type="tel" name="phone" placeholder="+91 98765 43210" required>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Aadhaar Number <span class="required">*</span></label>
+            <input type="text" name="aadhaar" placeholder="1234 5678 9012" maxlength="14" required>
+          </div>
+          <div class="form-group">
+            <label>PAN Number <span class="required">*</span></label>
+            <input type="text" name="pan" placeholder="ABCDE1234F" maxlength="10" required>
+          </div>
+        </div>
+      </div>
+
+      <!-- Address Details -->
+      <div class="form-card">
+        <span class="section-badge">Section 2</span>
+        <h2>Address Details</h2>
+
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Street Address <span class="required">*</span></label>
+            <input type="text" name="street" placeholder="House No., Street, Locality" required>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>City <span class="required">*</span></label>
+            <input type="text" name="city" placeholder="City" required>
+          </div>
+          <div class="form-group">
+            <label>State <span class="required">*</span></label>
+            <select name="state" required>
+              <option value="">Select state</option>
+              <option value="andhra-pradesh">Andhra Pradesh</option>
+              <option value="bihar">Bihar</option>
+              <option value="delhi">Delhi</option>
+              <option value="goa">Goa</option>
+              <option value="gujarat">Gujarat</option>
+              <option value="haryana">Haryana</option>
+              <option value="karnataka">Karnataka</option>
+              <option value="kerala">Kerala</option>
+              <option value="madhya-pradesh">Madhya Pradesh</option>
+              <option value="maharashtra">Maharashtra</option>
+              <option value="punjab">Punjab</option>
+              <option value="rajasthan">Rajasthan</option>
+              <option value="tamil-nadu">Tamil Nadu</option>
+              <option value="telangana">Telangana</option>
+              <option value="uttar-pradesh">Uttar Pradesh</option>
+              <option value="west-bengal">West Bengal</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>PIN Code <span class="required">*</span></label>
+            <input type="text" name="pincode" placeholder="6-digit PIN" maxlength="6" required>
+          </div>
+          <div class="form-group">
+            <label>Country</label>
+            <input type="text" name="country" value="India" readonly>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bank Details -->
+      <div class="form-card">
+        <span class="section-badge">Section 3</span>
+        <h2>Bank Details</h2>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Bank Name <span class="required">*</span></label>
+            <input type="text" name="bankName" placeholder="Bank name" required>
+          </div>
+          <div class="form-group">
+            <label>IFSC Code <span class="required">*</span></label>
+            <input type="text" name="ifsc" placeholder="SBIN0001234" maxlength="11" required>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Account Number <span class="required">*</span></label>
+            <input type="text" name="accountNumber" placeholder="Account number" required>
+          </div>
+          <div class="form-group">
+            <label>Account Type</label>
+            <select name="accountType">
+              <option value="savings">Savings</option>
+              <option value="current">Current</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Declaration -->
+      <div class="form-card">
+        <span class="section-badge">Section 4</span>
+        <h2>Declaration</h2>
+
+        <div class="form-row full">
+          <div class="form-group">
+            <label>
+              <input type="checkbox" name="declaration" required style="margin-right: 8px;">
+              I hereby declare that all the information provided above is true and correct to the best of my knowledge.
+            </label>
+          </div>
+        </div>
+
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Place</label>
+            <input type="text" name="place" placeholder="City/Town">
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button type="submit" class="btn-primary">Submit Application</button>
+          <button type="reset" class="btn-secondary">Reset Form</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="vless-status" id="vlessStatus" style="display: none;">
+    🐾 VLESS Content Script Active
+  </div>
+
+  <script>
+    // Show VLESS status if content script is loaded
+    document.addEventListener('DOMContentLoaded', () => {
+      // Check if VLESS content script is loaded
+      if (window.chrome?.runtime?.sendMessage) {
+        document.getElementById('vlessStatus').style.display = 'block';
+      }
+    });
+
+    // Handle form submission
+    document.getElementById('applicationForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      alert('Form submitted successfully! (This is a test — no data was sent)');
+    });
+  </script>
+</body>
+</html>
