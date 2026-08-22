@@ -157,6 +157,22 @@ export interface OffscreenMethods {
       ocrTimeMs: number;
     };
   };
+  /** Run Florence-2 full screen perception (OD + OCR + caption). */
+  perceiveScreen: {
+    params: { imageDataUrl: string };
+    result: {
+      elements: Array<{ label: string; box: { x: number; y: number; w: number; h: number }; confidence: number; category: string }>;
+      textRegions: Array<{ text: string; box: { x: number; y: number; w: number; h: number }; confidence: number }>;
+      caption: string;
+      timings: { total: number; modelLoad: number; od: number; ocr: number; grounding: number };
+      tasksRun: string[];
+    };
+  };
+  /** Run Florence-2 phrase grounding: find element matching natural language. */
+  groundPhrase: {
+    params: { imageDataUrl: string; phrase: string };
+    result: { phrase: string; results: Array<{ box: { x: number; y: number; w: number; h: number }; confidence: number }> };
+  };
 }
 
 export type OffscreenMethodName = keyof OffscreenMethods;

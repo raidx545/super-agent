@@ -203,7 +203,31 @@ export async function executeFullPipeline(
     captureStep.status = "complete";
 
     // ════════════════════════════════════════════════════════
-    // PHASE 2: DETECT PII — Multi-signal (DOM + OCR)
+    // PHASE 1.5: VISION PERCEPTION — Florence-2 ViT (offscreen)
+    // The PS requires "local Vision Transformer reads the screen."
+    // Florence-2 does open-vocab detection + OCR + caption.
+    // Graceful degradation: if not loaded, pipeline continues with DOM+OCR only.
+    // ════════════════════════════════════════════════════════
+
+    let florenceResult: any = null;
+    if (screenshotDataUrl) {
+      const vitStep = addStep("vision_perception");
+      const vitResult = await runStep(vitStep, async () => {
+        return callOffscreen("perceiveScreen", {
+          imageDataUrl: screenshotDataUrl,
+        });
+      });
+      if (vitResult && vitResult.tasksRun && vitResult.tasksRun.length > 0) {
+        florenceResult = vitResult;
+        vitStep.details = `Florence-2: ${vitResult.elements?.length || 0} elements, ${vitResult.textRegions?.length || 0} text regions (${vitResult.timings?.total?.toFixed(0) || 0}ms)`;
+        traceObserve(`Florence-2 ViT detected ${vitResult.elements?.length || 0} elements, ${vitResult.textRegions?.length || 0} text regions on screen`);
+      } else {
+        vitStep.details = "Florence-2 not available — using DOM+OCR fallback";
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 2: DETECT PII — Multi-signal (DOM + OCR + ViT)
     // ════════════════════════════════════════════════════════
 
     const detectStep = addStep("detect_pii");
@@ -212,17 +236,46 @@ export async function executeFullPipeline(
     let ocrTextBlocks: Array<{ text: string; confidence: number; boundingBox: { x: number; y: number; width: number; height: number } }> = [];
     if (screenshotDataUrl) {
       try {
+        // If Florence-2 already ran OCR, use its text regions
+        if (florenceResult?.textRegions?.length > 0) {
+          ocrTextBlocks = florenceResult.textRegions.map((tr: any) => ({
+            text: tr.text,
+            confidence: tr.confidence,
+            boundingBox: tr.box,
+          }));
+        }
+        // Also run PP-OCR for additional text coverage (Florence-2 + PP-OCR = best coverage)
         const ocrResult: OcrResult = await callOffscreen("runOcr", {
           imageDataUrl: screenshotDataUrl,
           lang: "auto",
         });
         if (ocrResult.words && ocrResult.words.length > 0) {
-          ocrTextBlocks = ocrResult.words.map((w) => ({
+          const ppOcrBlocks = ocrResult.words.map((w) => ({
             text: w.text,
             confidence: w.score,
             boundingBox: { x: w.box.x, y: w.box.y, width: w.box.w, height: w.box.h },
           }));
-          detectStep.details = `OCR: ${ocrTextBlocks.length} text regions (${ocrResult.timings.total.toFixed(0)}ms, ${ocrResult.backend})`;
+          // Merge: deduplicate by IoU, keep highest confidence
+          for (const block of ppOcrBlocks) {
+            const duplicate = ocrTextBlocks.find((existing) => {
+              const a = existing.boundingBox;
+              const b = block.boundingBox;
+              const ix = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+              const iy = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+              const interArea = ix * iy;
+              const unionArea = a.width * a.height + b.width * b.height - interArea;
+              return unionArea > 0 && interArea / unionArea > 0.5;
+            });
+            if (!duplicate || block.confidence > duplicate.confidence) {
+              if (duplicate) {
+                duplicate.text = block.text;
+                duplicate.confidence = block.confidence;
+              } else {
+                ocrTextBlocks.push(block);
+              }
+            }
+          }
+          detectStep.details = `OCR: ${ocrTextBlocks.length} text regions (Florence-2 + PP-OCR, ${ocrResult.timings.total.toFixed(0)}ms)`;
         }
       } catch (err) {
         // OCR is optional — DOM detection still works
@@ -886,6 +939,77 @@ function generateRuleBasedPlan(
       confidence: 0.9,
       verification: "URL should change",
       risk: "medium",
+    });
+  }
+
+  // Extract data from page: "extract all text", "get the data", "read this page"
+  if (lower.includes("extract") || lower.includes("read this") || lower.includes("get the data") || lower.includes("scrape")) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "wait", timeout: 1000, retries: 0, maxRetries: 0 },
+      reasoning: "Wait for page to fully load before extraction",
+      confidence: 0.9,
+      verification: "Page content should be stable",
+      risk: "low",
+    });
+    // The extraction happens via the DOM state that's already captured
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "scroll", value: "down", retries: 0, maxRetries: 1 },
+      reasoning: "Scroll to load all lazy content",
+      confidence: 0.8,
+      verification: "More content should be visible",
+      risk: "low",
+    });
+  }
+
+  // Go back: "go back", "return to previous page"
+  if (lower.includes("go back") || lower.includes("return") || lower.includes("previous page")) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "go_back", retries: 0, maxRetries: 1 },
+      reasoning: "Navigate back to previous page",
+      confidence: 0.9,
+      verification: "URL should change to previous page",
+      risk: "low",
+    });
+  }
+
+  // Hover over element: "hover over X", "mouse over X"
+  const hoverMatch = lower.match(/(?:hover|mouse\s*over)\s+(?:on\s+)?["']?([^"']+)["']?/);
+  if (hoverMatch) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "hover", target: hoverMatch[1].trim(), retries: 0, maxRetries: 3 },
+      reasoning: `Hover over "${hoverMatch[1].trim()}"`,
+      confidence: 0.8,
+      verification: "Tooltip or dropdown should appear",
+      risk: "low",
+    });
+  }
+
+  // Wait for element: "wait for X to appear"
+  const waitMatch = lower.match(/wait\s+(?:for\s+)?(.+?)(?:\s+to\s+(?:appear|load|show))?$/);
+  if (waitMatch && steps.length === 0) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "wait", timeout: 3000, retries: 0, maxRetries: 0 },
+      reasoning: `Wait for page content to load`,
+      confidence: 0.7,
+      verification: "Page should be fully loaded",
+      risk: "low",
+    });
+  }
+
+  // Tab key: "press tab", "tab through fields"
+  if (lower.includes("tab") && (lower.includes("press") || lower.includes("through"))) {
+    steps.push({
+      index: idx++,
+      action: { id: `r-${idx}`, type: "press_key", key: "Tab", retries: 0, maxRetries: 1 },
+      reasoning: "Press Tab to move to next field",
+      confidence: 0.85,
+      verification: "Focus should move to next field",
+      risk: "low",
     });
   }
 
