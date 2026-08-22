@@ -1,8 +1,11 @@
 // ============================================================
 // VLESS — Model Manager
 // Downloads, caches, and manages local ONNX models in IndexedDB
-// First run: downloads models (~40MB total)
+// First run: downloads models (~10MB lite / ~18MB full)
 // Subsequent runs: loads from cache in <100ms
+//
+// Models sourced from: https://huggingface.co/monkt/paddleocr-onnx
+// License: Apache 2.0
 // ============================================================
 
 import * as ort from "onnxruntime-web";
@@ -15,49 +18,55 @@ export interface ModelInfo {
   description: string;
   url: string;
   size: number; // bytes
-  type: "ocr-det" | "ocr-rec" | "ui-detector" | "layout" | "llm";
+  type: "ocr-det" | "ocr-rec";
   inputShape: readonly number[];
   inputName: string;
   outputNames: string[];
-  required: boolean; // required for basic operation
+  required: boolean;
+  langGroup?: string; // For recognition models: which language group
 }
 
 export const MODEL_REGISTRY: ModelInfo[] = [
+  // ── Detection Models ────────────────────────────────
   {
-    id: "ppocr-det",
-    name: "PaddleOCR Detection",
-    description: "Detects text regions in screenshots (2.4MB)",
-    url: "https://huggingface.co/nickmuchi/paddleocr-onnx/resolve/main/det.onnx",
-    size: 2_400_000,
+    id: "ppocr-det-v3",
+    name: "PaddleOCR Detection v3",
+    description: "Detects text regions — lightweight (2.3MB)",
+    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v3/det.onnx",
+    size: 2_300_000,
     type: "ocr-det",
     inputShape: [1, 3, 640, 640],
     inputName: "input",
     outputNames: ["output"],
     required: true,
   },
+  // ── Recognition Models (English — default) ──────────
   {
-    id: "ppocr-rec",
-    name: "PaddleOCR Recognition",
-    description: "Reads text from detected regions (8.5MB)",
-    url: "https://huggingface.co/nickmuchi/paddleocr-onnx/resolve/main/rec.onnx",
-    size: 8_500_000,
+    id: "ppocr-rec-en",
+    name: "PaddleOCR English Recognition",
+    description: "Reads English text from detected regions (7.5MB)",
+    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/english/rec.onnx",
+    size: 7_500_000,
     type: "ocr-rec",
     inputShape: [1, 3, 32, 320],
     inputName: "input",
     outputNames: ["output"],
     required: true,
+    langGroup: "english",
   },
+  // ── Recognition Models (Hindi — for Indian forms) ───
   {
-    id: "ui-detector",
-    name: "UI Element Detector",
-    description: "Detects buttons, inputs, links, dropdowns visually (6MB)",
-    url: "https://huggingface.co/web-ui-detector/resolve/main/ui-detector-q8.onnx",
-    size: 6_000_000,
-    type: "ui-detector",
-    inputShape: [1, 3, 640, 640],
-    inputName: "images",
+    id: "ppocr-rec-hi",
+    name: "PaddleOCR Hindi Recognition",
+    description: "Reads Hindi/Devanagari text (8.6MB)",
+    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/hindi/rec.onnx",
+    size: 8_600_000,
+    type: "ocr-rec",
+    inputShape: [1, 3, 32, 320],
+    inputName: "input",
     outputNames: ["output"],
     required: false,
+    langGroup: "hindi",
   },
 ];
 

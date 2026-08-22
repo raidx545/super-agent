@@ -44,7 +44,7 @@ export class VisionPipeline {
     const modelsUsed: string[] = [];
 
     // Step 1: OCR — Extract all text with positions
-    if (this.manager.isModelReady("ppocr-det") && this.manager.isModelReady("ppocr-rec")) {
+    if (this.manager.isModelReady("ppocr-det-v3") && (this.manager.isModelReady("ppocr-rec-en") || this.manager.isModelReady("ppocr-rec-hi"))) {
       try {
         const ocrResult = await this.runOCR(canvas);
         textBlocks.push(...ocrResult);
@@ -74,18 +74,7 @@ export class VisionPipeline {
       }
     }
 
-    // Step 2: UI Element Detection — Find interactive elements
-    if (this.manager.isModelReady("ui-detector")) {
-      try {
-        const detectedElements = await this.detectUIElements(canvas);
-        elements.push(...detectedElements);
-        modelsUsed.push("ui-detector");
-      } catch (error) {
-        console.error("🐾 [VisionPipeline] UI detection failed:", error);
-      }
-    }
-
-    // Step 3: Merge overlapping elements
+    // Step 2: Merge overlapping elements
     const merged = this.mergeOverlappingElements(elements);
 
     const inferenceTime = performance.now() - startTime;
@@ -103,8 +92,8 @@ export class VisionPipeline {
    * Run OCR on a screenshot to extract all text with positions.
    */
   private async runOCR(canvas: HTMLCanvasElement): Promise<TextBlock[]> {
-    const detSession = this.manager.getSession("ppocr-det");
-    const recSession = this.manager.getSession("ppocr-rec");
+    const detSession = this.manager.getSession("ppocr-det-v3");
+    const recSession = this.manager.getSession("ppocr-rec-en") || this.manager.getSession("ppocr-rec-hi");
     if (!detSession || !recSession) return [];
 
     // Preprocess image for detection model
@@ -160,72 +149,6 @@ export class VisionPipeline {
     }
 
     return textBlocks;
-  }
-
-  /**
-   * Detect UI elements (buttons, inputs, links) from screenshot.
-   */
-  private async detectUIElements(canvas: HTMLCanvasElement): Promise<PageElement[]> {
-    const session = this.manager.getSession("ui-detector");
-    if (!session) return [];
-
-    // Preprocess
-    const input = this.preprocessImage(canvas, [1, 3, 640, 640]);
-
-    // Run inference
-    const results = await session.run({ images: input });
-    const output = results.output || results[Object.keys(results)[0]];
-
-    // Parse detections: [x1, y1, x2, y2, confidence, class_id]
-    const elements: PageElement[] = [];
-    const data = output.data as Float32Array;
-    const stride = 6;
-
-    for (let i = 0; i < data.length; i += stride) {
-      const confidence = data[i + 4];
-      if (confidence < 0.5) continue;
-
-      const classId = Math.round(data[i + 5]);
-      const x1 = data[i];
-      const y1 = data[i + 1];
-      const x2 = data[i + 2];
-      const y2 = data[i + 3];
-
-      // Scale back to original canvas coordinates
-      const scaleX = canvas.width / 640;
-      const scaleY = canvas.height / 640;
-
-      const tag = this.classIdToTag(classId);
-
-      elements.push({
-        id: `vision-el-${elements.length}`,
-        tag,
-        role: this.classIdToRole(classId),
-        text: "",
-        label: `${tag} (vision-detected)`,
-        placeholder: "",
-        ariaLabel: "",
-        type: this.classIdToType(classId),
-        rect: {
-          x: x1 * scaleX,
-          y: y1 * scaleY,
-          width: (x2 - x1) * scaleX,
-          height: (y2 - y1) * scaleY,
-          top: y1 * scaleY,
-          bottom: y2 * scaleY,
-          left: x1 * scaleX,
-          right: x2 * scaleX,
-          toJSON: () => ({}),
-        } as DOMRect,
-        isVisible: true,
-        isInteractive: true,
-        isDisabled: false,
-        confidence,
-        source: "vision",
-      });
-    }
-
-    return elements;
   }
 
   // ── Preprocessing ──────────────────────────────────────
@@ -411,47 +334,6 @@ export class VisionPipeline {
     return overlap > 0.3;
   }
 
-  private classIdToTag(classId: number): string {
-    const tags: Record<number, string> = {
-      0: "button",
-      1: "input",
-      2: "select",
-      3: "a",
-      4: "textarea",
-      5: "checkbox",
-      6: "radio",
-      7: "toggle",
-    };
-    return tags[classId] || "div";
-  }
-
-  private classIdToRole(classId: number): string {
-    const roles: Record<number, string> = {
-      0: "button",
-      1: "textbox",
-      2: "combobox",
-      3: "link",
-      4: "textbox",
-      5: "checkbox",
-      6: "radio",
-      7: "switch",
-    };
-    return roles[classId] || "generic";
-  }
-
-  private classIdToType(classId: number): string {
-    const types: Record<number, string> = {
-      0: "button",
-      1: "text",
-      2: "select",
-      3: "link",
-      4: "textarea",
-      5: "checkbox",
-      6: "radio",
-      7: "toggle",
-    };
-    return types[classId] || "";
-  }
 }
 
 // ── Singleton ────────────────────────────────────────────────
