@@ -301,8 +301,12 @@ function buildPlanningPrompt(
     return `Form ${f.id} (${f.fields.length} fields):\n${fields}`;
   }).join("\n");
 
-  const dataContextStr = dataContext
-    ? `\nAvailable data:\n${Object.entries(dataContext).map(([k, v]) => `  ${k}: ${v}`).join("\n")}`
+  // PRIVACY: Never send dataContext values to the LLM.
+  // The LLM only sees that PII fields exist (marked [PII:category]).
+  // Actual values are filled locally by the client after the plan is returned.
+  const piiFieldCount = dataContext ? Object.keys(dataContext).length : 0;
+  const dataContextStr = piiFieldCount > 0
+    ? `\nNote: ${piiFieldCount} fields require PII data (Aadhaar, phone, name, etc).\nThe client has these values locally and will fill them by index after planning.`
     : "";
 
   return `You are a browser automation agent. Plan actions to complete the task.

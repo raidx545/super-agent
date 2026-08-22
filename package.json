@@ -5,9 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wxt",
-    "build": "wxt build",
-    "build:firefox": "wxt build -b firefox",
+    "setup:ort": "node scripts/copy-ort-wasm.mjs",
+    "dev": "node scripts/copy-ort-wasm.mjs && wxt",
+    "build": "node scripts/copy-ort-wasm.mjs && wxt build",
+    "build:firefox": "node scripts/copy-ort-wasm.mjs && wxt build -b firefox",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "test": "vitest run",
@@ -19,6 +20,9 @@
     "server": "node server/index.js"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "@mlc-ai/web-llm": "^0.2.84",
     "idb": "^8.0.0",
     "onnxruntime-web": "^1.21.0",
     "zod": "^3.24.0"

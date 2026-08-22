@@ -1,4 +1,8 @@
 allowBuilds:
   esbuild: true
+  # Node-only native builds. This is a browser extension (onnxruntime-web
+  # WASM/WebGPU + canvas), so neither is ever loaded — don't build them.
+  onnxruntime-node: false
   protobufjs: true
+  sharp: false
   spawn-sync: true

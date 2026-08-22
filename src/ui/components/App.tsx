@@ -5,7 +5,7 @@ import { ReasoningTrace } from "./ReasoningTrace";
 import { LearningLog } from "./LearningLog";
 import { PrivacyMonitor } from "./PrivacyMonitor";
 import { VoiceControl } from "./VoiceControl";
-import { ModelManagerUI } from "./ModelManagerUI";
+import { RuntimePanel } from "./RuntimePanel";
 import { ProviderSettings } from "./ProviderSettings";
 import { Onboarding } from "./Onboarding";
 import { useKeyboardShortcuts, SHORTCUTS } from "../hooks/useKeyboardShortcuts";
@@ -23,7 +23,7 @@ type Tab = "task" | "ai" | "models" | "learn" | "privacy" | "voice" | "debug";
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "task", icon: "T", label: "Task" },
   { id: "ai", icon: "L", label: "AI" },
-  { id: "models", icon: "M", label: "Models" },
+  { id: "models", icon: "R", label: "Runtime" },
   { id: "learn", icon: "L", label: "Learn" },
   { id: "privacy", icon: "P", label: "Privacy" },
   { id: "voice", icon: "V", label: "Voice" },
@@ -341,7 +341,7 @@ export function App() {
           />
         )}
         {activeTab === "ai" && <ProviderSettings />}
-        {activeTab === "models" && <ModelManagerUI />}
+        {activeTab === "models" && <RuntimePanel />}
         {activeTab === "learn" && <LearningLog />}
         {activeTab === "privacy" && <PrivacyMonitor />}
         {activeTab === "voice" && <VoiceControl />}

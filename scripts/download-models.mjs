@@ -1,102 +1,105 @@
 #!/usr/bin/env node
 // ============================================================
-// VLESS — Model Downloader
-// Downloads real PaddleOCR ONNX models for on-device vision
+// VLESS — Model Downloader (PP-OCR, provenance-locked)
 //
-// Models from: https://huggingface.co/monkt/paddleocr-onnx
-// License: Apache 2.0
+// Source: https://huggingface.co/monkt/paddleocr-onnx  (Apache-2.0)
+// Verified against the repo tree on 2026-08-22. Each entry pins the
+// exact upstream byte size; a size mismatch aborts (the previously
+// bundled det.onnx was a truncated 1.21 MB copy of the 2.43 MB file).
 //
-// Run: node scripts/download-models.mjs
+// Model choices (see REBUILD_PLAN P1):
+//   det   PP-OCRv3_mobile_det  2.43 MB  — script-agnostic, light-weight
+//                                          (v5 det is 88 MB server → rejected)
+//   rec-en en_PP-OCRv5_mobile_rec 7.5 MB — output 438 classes
+//   rec-hi devanagari_PP-OCRv3_mobile_rec 8.6 MB — output 169 classes
+// Recognition input height is 48 (the model graph; the repo config.json
+// says 32 and is WRONG — the ONNX input dim is a fixed 48).
 // ============================================================
 
-import { mkdirSync, existsSync, statSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const MODEL_DIR = join(import.meta.dirname, "..", "public", "models");
+const BASE = "https://huggingface.co/monkt/paddleocr-onnx/resolve/main";
 
-const MODELS = [
+/** @type {{name:string, out:string, url:string, bytes:number, kind:"onnx"|"dict"}[]} */
+const FILES = [
   {
-    name: "PaddleOCR Detection v3 (2.3MB)",
-    filename: "ppocr-det-v3.onnx",
-    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v3/det.onnx",
-    sizeMB: 2.3,
+    name: "PP-OCRv3 mobile detection",
+    out: "ppocr-det-v3.onnx",
+    url: `${BASE}/detection/v3/det.onnx`,
+    bytes: 2429873,
+    kind: "onnx",
   },
   {
-    name: "PaddleOCR English Recognition (7.5MB)",
-    filename: "ppocr-rec-en.onnx",
-    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/english/rec.onnx",
-    sizeMB: 7.5,
+    name: "PP-OCRv5 English recognition",
+    out: "ppocr-rec-en.onnx",
+    url: `${BASE}/languages/english/rec.onnx`,
+    bytes: 7830888,
+    kind: "onnx",
   },
   {
-    name: "PaddleOCR Hindi Recognition (8.6MB)",
-    filename: "ppocr-rec-hi.onnx",
-    url: "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/hindi/rec.onnx",
-    sizeMB: 8.6,
+    name: "PP-OCRv3 Devanagari recognition",
+    out: "ppocr-rec-hi.onnx",
+    url: `${BASE}/languages/hindi/rec.onnx`,
+    bytes: 8980224,
+    kind: "onnx",
+  },
+  {
+    name: "English char dictionary (ppocrv5_en_dict)",
+    out: "ppocr-rec-en.dict.txt",
+    url: `${BASE}/languages/english/dict.txt`,
+    bytes: 1416,
+    kind: "dict",
+  },
+  {
+    name: "Devanagari char dictionary",
+    out: "ppocr-rec-hi.dict.txt",
+    url: `${BASE}/languages/hindi/dict.txt`,
+    bytes: 508,
+    kind: "dict",
   },
 ];
 
-async function downloadFile(url, dest) {
-  console.log(`   Downloading from ${url}...`);
-
-  // Follow redirects (HuggingFace LFS uses 302 redirects)
-  let response = await fetch(url, { redirect: "follow" });
-  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  writeFileSync(dest, buffer);
-  return buffer.length;
+async function fetchBytes(url) {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  return Buffer.from(await res.arrayBuffer());
 }
 
-async function downloadModel(model) {
-  const dest = join(MODEL_DIR, model.filename);
-
-  if (existsSync(dest)) {
-    const stat = statSync(dest);
-    if (stat.size > 100_000) {
-      console.log(`✅ ${model.name} — cached (${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
-      return true;
-    }
-  }
-
-  console.log(`⬇️  ${model.name}...`);
-
-  try {
-    const bytes = await downloadFile(model.url, dest);
-    console.log(`✅ ${model.name} — downloaded (${(bytes / 1024 / 1024).toFixed(1)}MB)`);
+async function getOne(f, force) {
+  const dest = join(MODEL_DIR, f.out);
+  if (!force && existsSync(dest) && statSync(dest).size === f.bytes) {
+    console.log(`  ok    ${f.out} — present & correct (${f.bytes} B)`);
     return true;
-  } catch (error) {
-    console.error(`❌ ${model.name} — FAILED: ${error.message}`);
-    console.log(`   Manual download: ${model.url}`);
-    console.log(`   Place at: ${dest}\n`);
+  }
+  process.stdout.write(`  get   ${f.out} … `);
+  try {
+    const buf = await fetchBytes(f.url);
+    if (buf.length !== f.bytes) {
+      console.log(`SIZE MISMATCH got ${buf.length} B, expected ${f.bytes} B — NOT written`);
+      return false;
+    }
+    writeFileSync(dest, buf);
+    console.log(`done (${buf.length} B)`);
+    return true;
+  } catch (err) {
+    console.log(`FAILED: ${err.message}`);
     return false;
   }
 }
 
 async function main() {
-  console.log("🐾 VLESS — Model Downloader\n");
-  console.log("Source: https://huggingface.co/monkt/paddleocr-onnx");
-  console.log("License: Apache 2.0\n");
-
+  const force = process.argv.includes("--force");
+  console.log("VLESS model downloader — source: monkt/paddleocr-onnx (Apache-2.0)");
   mkdirSync(MODEL_DIR, { recursive: true });
-
-  let success = 0;
-  let total = MODELS.length;
-
-  for (const model of MODELS) {
-    const ok = await downloadModel(model);
-    if (ok) success++;
-  }
-
-  console.log(`\n📦 Models: ${success}/${total} ready`);
-  console.log(`   Location: ${MODEL_DIR}/`);
-
-  if (success < total) {
-    console.log("\n⚠️  Some models failed. The extension will work without them:");
-    console.log("   - DOM extraction handles 95% of web pages");
-    console.log("   - Vision models are only needed for canvas apps, PDFs, image-heavy pages");
-  } else {
-    console.log("\n🎉 All models ready! Full hybrid DOM+Vision perception available.");
-  }
+  let ok = 0;
+  for (const f of FILES) if (await getOne(f, force)) ok++;
+  console.log(`\n${ok}/${FILES.length} files ready in public/models/`);
+  if (ok < FILES.length) process.exitCode = 1;
 }
 
-main().catch(console.error);
+main().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

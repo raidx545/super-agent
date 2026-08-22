@@ -307,12 +307,19 @@ export type MessageType =
   | "CHECK_PROVIDERS"
   | "DO_CAPTURE_TAB"
   | "CAPTURE_SCREENSHOT"
+  | "CAPTURE_FULL_PAGE"
+  | "GET_TRIPWIRE_STATS"
   | "INJECT_REDACTION_CSS"
   | "REMOVE_REDACTION_CSS"
   | "SHOW_PII_OVERLAY"
   | "HIDE_PII_OVERLAY"
   | "SHOW_PIPELINE_PANEL"
-  | "UPDATE_PIPELINE_PANEL";
+  | "UPDATE_PIPELINE_PANEL"
+  // ── On-device runtime (offscreen ML host) ──
+  | "GET_BACKEND"
+  | "GET_MODEL_STATUSES"
+  | "WARM_MODELS"
+  | "RUN_OCR";
 
 export interface Message<T = unknown> {
   type: MessageType;

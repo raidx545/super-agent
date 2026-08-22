@@ -9,6 +9,10 @@ dist/
 
 # Downloaded models
 public/models/*.onnx
+public/models/*.dict.txt
+
+# Vendored ORT wasm runtime (reproduce with: pnpm setup:ort)
+public/ort/
 
 # Desktop app
 desktop/node_modules/

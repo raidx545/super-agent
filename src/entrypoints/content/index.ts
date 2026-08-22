@@ -9,6 +9,7 @@
 
 import { defineContentScript } from "wxt/utils/define-content-script";
 import type { Message, PageState, AgentAction } from "../../types";
+import { activateTripwire, getTripwireStats } from "../../core/privacy/tripwire";
 
 export default defineContentScript({
   matches: ["<all_urls>"],
@@ -24,6 +25,15 @@ export default defineContentScript({
     // action) lands in P6 with the execution loop, wired into action results.
     // The previous MutationObserver scaffolding here was never consumed, so it
     // was removed rather than left as dead weight.
+
+    // ── PII Tripwire ──────────────────────────────────────
+    // Activate the privacy tripwire on every page load.
+    // This hooks fetch/XHR and BLOCKS any request containing PII.
+    try {
+      activateTripwire();
+    } catch {
+      // Tripwire activation is best-effort
+    }
 
     // ── Message Router ─────────────────────────────────────
 
@@ -83,6 +93,18 @@ export default defineContentScript({
             updatePipelinePanel(message.payload as any);
             sendResponse({ success: true });
             break;
+
+          case "GET_TRIPWIRE_STATS":
+            sendResponse(getTripwireStats());
+            break;
+
+          case "CAPTURE_FULL_PAGE":
+            captureFullPage()
+              .then(sendResponse)
+              .catch((err: Error) =>
+                sendResponse({ success: false, error: err.message })
+              );
+            return true;
 
           default:
             sendResponse({ error: `Unknown message type: ${message.type}` });
@@ -315,6 +337,105 @@ export default defineContentScript({
             error: err instanceof Error ? err.message : "Capture failed",
           });
         }
+      });
+    }
+
+    // ════════════════════════════════════════════════════════
+    // SCROLL-STITCHING — Full-page capture
+    // Captures multiple viewport screenshots while scrolling,
+    // then stitches them into a single full-page image.
+    // ============================================================
+
+    async function captureFullPage(): Promise<{
+      success: boolean;
+      dataUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+    }> {
+      try {
+        const scrollHeight = document.documentElement.scrollHeight;
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+
+        // If page fits in viewport, just capture normally
+        if (scrollHeight <= viewportHeight * 1.1) {
+          return captureVisibleTab();
+        }
+
+        // Capture multiple viewport screenshots while scrolling
+        const captures: Array<{ dataUrl: string; scrollY: number }> = [];
+        const originalScrollY = window.scrollY;
+        const numCaptures = Math.ceil(scrollHeight / (viewportHeight * 0.8));
+
+        for (let i = 0; i < numCaptures; i++) {
+          const targetScroll = Math.min(
+            i * viewportHeight * 0.8,
+            scrollHeight - viewportHeight
+          );
+          window.scrollTo(0, targetScroll);
+          // Wait for content to settle
+          await new Promise((r) => setTimeout(r, 200));
+
+          const response = await chrome.runtime.sendMessage({
+            type: "DO_CAPTURE_TAB",
+            payload: null,
+            source: "content",
+            timestamp: Date.now(),
+          } as Message);
+
+          if (response?.success && response.dataUrl) {
+            captures.push({ dataUrl: response.dataUrl, scrollY: targetScroll });
+          }
+        }
+
+        // Restore original scroll position
+        window.scrollTo(0, originalScrollY);
+
+        if (captures.length === 0) {
+          return { success: false, error: "No captures obtained" };
+        }
+
+        if (captures.length === 1) {
+          return { success: true, ...captures[0], width: viewportWidth, height: viewportHeight };
+        }
+
+        // Stitch captures into a single full-page image
+        // Create a canvas the size of the full page
+        const stitchCanvas = new OffscreenCanvas(viewportWidth, scrollHeight);
+        const stitchCtx = stitchCanvas.getContext("2d")!;
+
+        for (const capture of captures) {
+          const response = await fetch(capture.dataUrl);
+          const blob = await response.blob();
+          const bitmap = await createImageBitmap(blob);
+          stitchCtx.drawImage(bitmap, 0, capture.scrollY, viewportWidth, viewportHeight);
+          bitmap.close();
+        }
+
+        const stitchedBlob = await stitchCanvas.convertToBlob({ type: "image/png" });
+        const dataUrl = await blobToDataURL(stitchedBlob);
+
+        return {
+          success: true,
+          dataUrl,
+          width: viewportWidth,
+          height: scrollHeight,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : "Full-page capture failed",
+        };
+      }
+    }
+
+    function blobToDataURL(blob: Blob): Promise<string> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
       });
     }
 

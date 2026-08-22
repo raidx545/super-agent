@@ -21,18 +21,32 @@ import type {
   AgentAction,
   VerificationSignal,
 } from "../../types";
-import { checkOllamaAvailability, generatePlanWithLLM, isLLMAvailable, getLLMStatus } from "../../core/agent/llm-bridge";
+import type { PipelineResult } from "../../core/pipeline/full-pipeline";
+import type { ModelId, OcrResult } from "../../types/runtime";
 import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
 import { validateForm } from "../../core/agent/validator";
-import { executeFullPipeline, type PipelineResult } from "../../core/pipeline/full-pipeline";
-import { checkProviders } from "../../core/agent/llm-providers";
+import { callOffscreen, isRuntimeEnvelope } from "../../core/runtime/messaging";
+
+// ── Lazy imports: HEAVY modules loaded on-demand ──────────
+// executeFullPipeline pulls in ONNX runtime, vision pipeline, PII detector
+// llm-bridge pulls in server communication
+// llm-providers pulls in 4 provider implementations + prompt builder
+// Loading these eagerly makes the SW 70MB → crashes on startup.
+let _llmBridge: any = null;
+let _fullPipeline: any = null;
+let _llmProviders: any = null;
+
+async function lazyLLMBridge() { if (!_llmBridge) _llmBridge = await import("../../core/agent/llm-bridge"); return _llmBridge; }
+async function lazyFullPipeline() { if (!_fullPipeline) _fullPipeline = await import("../../core/pipeline/full-pipeline"); return _fullPipeline; }
+async function lazyLLMProviders() { if (!_llmProviders) _llmProviders = await import("../../core/agent/llm-providers"); return _llmProviders; }
 
 export default defineBackground({
   persistent: false,
 
   main() {
     // ── Extension Lifecycle ──────────────────────────────
+    try {
 
     chrome.runtime.onInstalled.addListener(async () => {
       console.log("🐾 VLESS installed.");
@@ -49,14 +63,24 @@ export default defineBackground({
       });
 
       // Check Ollama on install
-      const llmStatus = await checkOllamaAvailability();
+      const llmStatus = await (await lazyLLMBridge()).checkOllamaAvailability();
       console.log("🐾 LLM:", llmStatus.available ? `Connected (${llmStatus.model})` : "Unavailable");
     });
 
     // Open side panel when extension icon is clicked
-    chrome.action.onClicked.addListener((tab) => {
+    chrome.action.onClicked.addListener(async (tab) => {
       if (tab.id) {
-        chrome.sidePanel.open({ tabId: tab.id });
+        try {
+          await chrome.sidePanel.open({ tabId: tab.id });
+        } catch (err) {
+          console.error("[VLESS] Failed to open side panel:", err);
+          // Fallback: set side panel to open on next action
+          try {
+            await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+          } catch {
+            // ignore
+          }
+        }
       }
     });
 
@@ -97,6 +121,11 @@ export default defineBackground({
         sender: chrome.runtime.MessageSender,
         sendResponse: (response?: any) => void
       ) => {
+        // Offscreen RPC requests + model-progress broadcasts ride their own
+        // channel; they're handled by the offscreen doc / progress subscribers,
+        // never by this router. Ignore them so we don't reply with an error.
+        if (isRuntimeEnvelope(message)) return false;
+
         handleMessage(message, sender)
           .then(sendResponse)
           .catch((error) => {
@@ -128,6 +157,22 @@ export default defineBackground({
           }
           stopMonitoring();
           return { success: true, message: "Task cancelled" };
+
+        // ── On-device runtime (proxied to the offscreen ML host) ──
+        case "GET_BACKEND":
+          return callOffscreen("detectBackend", undefined);
+        case "GET_MODEL_STATUSES":
+          return callOffscreen("getModelStatuses", undefined);
+        case "WARM_MODELS":
+          return callOffscreen(
+            "warmModels",
+            (message.payload as { ids: ModelId[] }) ?? { ids: [] }
+          );
+        case "RUN_OCR":
+          return handleRunOcr(
+            (message.payload as { lang?: "auto" | "en" | "hi"; maxSide?: number }) ?? {}
+          );
+
         case "PERCEIVE_PAGE":
           return handlePerceivePage();
         case "EXECUTE_ACTION":
@@ -139,9 +184,9 @@ export default defineBackground({
         case "TOGGLE_OVERLAY":
           return { success: true };
         case "CHECK_LLM":
-          return checkOllamaAvailability();
+          return (await lazyLLMBridge()).checkOllamaAvailability();
         case "GET_LLM_STATUS":
-          return getLLMStatus();
+          return (await lazyLLMBridge()).getLLMStatus();
         case "GET_PRIVACY_STATS":
           return getStats();
         case "CHECK_PROVIDERS":
@@ -222,9 +267,9 @@ export default defineBackground({
         log("analysis", "Generating action plan...");
 
         let plan;
-        if (isLLMAvailable()) {
+        if ((await lazyLLMBridge()).isLLMAvailable()) {
           log("analysis", "🧠 Using LLM for intelligent planning...");
-          const llmResult = await generatePlanWithLLM(payload.description, pageState, payload.data);
+          const llmResult = await (await lazyLLMBridge()).generatePlanWithLLM(payload.description, pageState, payload.data);
           if (llmResult.usedLLM && llmResult.steps.length > 0) {
             log("learning", `LLM generated ${llmResult.steps.length} steps`);
             plan = {
@@ -773,7 +818,7 @@ export default defineBackground({
 
       startMonitoring();
 
-      const result = await executeFullPipeline({
+      const result = await (await lazyFullPipeline()).executeFullPipeline({
         taskDescription: payload.description,
         dataContext: payload.data,
         tabId: payload.tabId,
@@ -838,7 +883,7 @@ export default defineBackground({
 
     async function handleCheckProviders() {
       try {
-        const statuses = await checkProviders();
+        const statuses = await (await lazyLLMProviders()).checkProviders();
         return { statuses };
       } catch (error) {
         return { statuses: [], error: error instanceof Error ? error.message : "Check failed" };
@@ -884,6 +929,46 @@ export default defineBackground({
       }
     }
 
+    // ══════════════════════════════════════════════════════
+    // OCR — capture the visible tab + run PP-OCR in the offscreen host
+    // ══════════════════════════════════════════════════════
+
+    async function handleRunOcr(payload: {
+      lang?: "auto" | "en" | "hi";
+      maxSide?: number;
+    }): Promise<{
+      success: boolean;
+      result?: OcrResult;
+      imageDataUrl?: string;
+      error?: string;
+    }> {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) return { success: false, error: "No active tab" };
+        if (isRestrictedUrl(tab.url)) {
+          return {
+            success: false,
+            error:
+              "Cannot capture browser pages (chrome://, edge://, …). Navigate to a website first.",
+          };
+        }
+        const imageDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: "png",
+        });
+        const result = await callOffscreen("runOcr", {
+          imageDataUrl,
+          lang: payload?.lang ?? "auto",
+          maxSide: payload?.maxSide,
+        });
+        return { success: true, result, imageDataUrl };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "OCR failed",
+        };
+      }
+    }
+
     function createEmptyPageState(): PageState {
       return {
         url: "", title: "", timestamp: Date.now(),
@@ -896,5 +981,6 @@ export default defineBackground({
         confidence: 0, perceptionTime: 0,
       };
     }
+    } catch (e) { console.error("[VLESS] Background SW crashed:", e); }
   },
 });

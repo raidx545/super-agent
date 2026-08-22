@@ -146,10 +146,12 @@ function buildPlanningPrompt(
     })
     .join("\n\n");
 
-  const dataStr = dataContext
-    ? `\nAvailable data (private, client-side only — NOT in the prompt):\n${Object.entries(dataContext)
-        .map(([k, v]) => `  ${k}: ${v.slice(0, 30)}`)
-        .join("\n")}`
+  // PRIVACY: Never send dataContext values to the LLM.
+  // The LLM only sees that PII fields exist (marked [PII:category]).
+  // Actual values are filled locally by the client after the plan is returned.
+  const piiFieldCount = dataContext ? Object.keys(dataContext).length : 0;
+  const dataStr = piiFieldCount > 0
+    ? `\nNote: ${piiFieldCount} fields require user data (filled client-side, not in prompt).\nFields marked [PII:category] have values available locally — use their index for type actions.`
     : "";
 
   const system = `You are VLESS, a browser automation agent. You analyze web pages and produce action plans.

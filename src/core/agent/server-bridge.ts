@@ -129,7 +129,7 @@ class OllamaProvider implements ServerProvider {
   async generatePlan(
     taskDescription: string,
     sanitizedContext: SanitizedContext,
-    dataContext?: Record<string, string>
+    _dataContext?: Record<string, string> // PRIVACY: not sent to server; filled locally by client
   ): Promise<PlanResult> {
     const startTime = performance.now();
 
@@ -145,7 +145,7 @@ class OllamaProvider implements ServerProvider {
     }
 
     try {
-      const prompt = buildPlanningPrompt(taskDescription, sanitizedContext, dataContext);
+      const prompt = buildPlanningPrompt(taskDescription, sanitizedContext, _dataContext);
       const response = await this.callOllama(prompt, false);
       const parsed = parsePlanResponse(response);
 
@@ -243,7 +243,7 @@ class CloudProxyProvider implements ServerProvider {
   async generatePlan(
     taskDescription: string,
     sanitizedContext: SanitizedContext,
-    dataContext?: Record<string, string>
+    _dataContext?: Record<string, string> // PRIVACY: not sent to server; filled locally by client
   ): Promise<PlanResult> {
     const startTime = performance.now();
 
@@ -265,7 +265,8 @@ class CloudProxyProvider implements ServerProvider {
         body: JSON.stringify({
           task: taskDescription,
           context: sanitizedContext,
-          data: dataContext,
+          // PRIVACY: Never send dataContext (PII values) to any server.
+          // PII is filled locally by the client after the plan is returned.
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT),
       });
@@ -338,7 +339,7 @@ class ServerManager {
   async generatePlan(
     taskDescription: string,
     sanitizedContext: SanitizedContext,
-    dataContext?: Record<string, string>
+    _dataContext?: Record<string, string> // PRIVACY: not sent to server; filled locally by client
   ): Promise<PlanResult> {
     if (!this.activeProvider) {
       return {
@@ -351,7 +352,7 @@ class ServerManager {
       };
     }
 
-    return this.activeProvider.generatePlan(taskDescription, sanitizedContext, dataContext);
+    return this.activeProvider.generatePlan(taskDescription, sanitizedContext, _dataContext);
   }
 }
 
@@ -378,8 +379,12 @@ function buildPlanningPrompt(
     return `Form ${f.id}:\n${fields}`;
   }).join("\n\n");
 
-  const dataStr = dataContext
-    ? `\nAvailable data (private, NOT sent to server):\n${Object.entries(dataContext).map(([k, v]) => `  ${k}: ${v.slice(0, 20)}...`).join("\n")}`
+  // PRIVACY: Never send dataContext values to the LLM.
+  // The LLM only sees that PII fields exist (marked [PII:category]).
+  // Actual values are filled locally by the client after the plan is returned.
+  const piiFieldCount = dataContext ? Object.keys(dataContext).length : 0;
+  const dataStr = piiFieldCount > 0
+    ? `\nNote: ${piiFieldCount} fields require user data (filled client-side, not in prompt).\nFields marked [PII:category] have values available locally — use their index for type actions.`
     : "";
 
   return `You are a browser automation agent. Plan actions to complete the task.

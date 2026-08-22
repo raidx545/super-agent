@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VLESS ML Host</title>
+  </head>
+  <body>
+    <!--
+      Offscreen ML host. No UI. This document exists solely to give the
+      extension a DOM/WebGPU/OffscreenCanvas-capable context in which to run
+      on-device models (OCR, Florence-2, GLiNER, redaction) — none of which
+      the MV3 service worker can host.
+    -->
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
