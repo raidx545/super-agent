@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLESS Desktop</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #030712;
+        color: #e5e7eb;
+        height: 100vh;
+        overflow: hidden;
+        -webkit-app-region: drag;
+      }
+      #root { height: 100vh; display: flex; flex-direction: column; }
+      button, input, textarea { -webkit-app-region: no-drag; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Desktop renderer logic — minimal companion UI
+      const root = document.getElementById('root');
+      
+      const hasVlessAPI = typeof window.vless !== 'undefined';
+
+      async function getSystemInfo() {
+        if (!hasVlessAPI) return { platform: 'web', arch: 'unknown', cpus: 0, memory: '0GB', hostname: 'browser', user: 'user' };
+        return await window.vless.getSystemInfo();
+      }
+
+      function renderApp() {
+        root.innerHTML = `
+          <header style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #1f2937;background:#0a0f1a;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:20px;">🐾</span>
+              <span style="font-weight:700;font-size:14px;color:#f3f4f6;">VLESS Desktop</span>
+              <span style="font-size:10px;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">v0.1.0</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button onclick="minimize()" style="background:none;border:none;color:#9ca3af;font-size:16px;cursor:pointer;padding:4px 8px;">—</button>
+              <button onclick="maximize()" style="background:none;border:none;color:#9ca3af;font-size:16px;cursor:pointer;padding:4px 8px;">□</button>
+              <button onclick="closeWindow()" style="background:none;border:none;color:#ef4444;font-size:16px;cursor:pointer;padding:4px 8px;">✕</button>
+            </div>
+          </header>
+          <main style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+            <nav style="display:flex;border-bottom:1px solid #1f2937;">
+              ${['🎯 Agent', '🖥️ System', '🎙️ Voice', '📋 Recipes', '⚙️ Settings'].map((tab, i) => `
+                <button onclick="switchTab(${i})" id="tab-${i}" style="flex:1;padding:12px 8px;background:${i===0?'#111827':'transparent'};border:none;border-bottom:${i===0?'2px solid #3b82f6':'2px solid transparent'};color:${i===0?'#f3f4f6':'#6b7280'};font-size:12px;cursor:pointer;transition:all 0.2s;">
+                  ${tab}
+                </button>
+              `).join('')}
+            </nav>
+            <div id="content" style="flex:1;overflow-y:auto;padding:20px;">
+              <div id="tab-content"></div>
+            </div>
+          </main>
+          <footer style="padding:8px 20px;border-top:1px solid #1f2937;font-size:10px;color:#4b5563;display:flex;justify-content:space-between;">
+            <span id="status-text">Ready</span>
+            <span style="display:flex;align-items:center;gap:4px;">
+              <span style="display:inline-block;width:6px;height:6px;background:#22c55e;border-radius:50%;"></span>
+              On-Device
+            </span>
+          </footer>
+        `;
+        showTab(0);
+      }
+
+      let currentTab = 0;
+
+      function switchTab(i) {
+        currentTab = i;
+        document.querySelectorAll('nav button').forEach((btn, idx) => {
+          btn.style.background = idx === i ? '#111827' : 'transparent';
+          btn.style.borderBottom = idx === i ? '2px solid #3b82f6' : '2px solid transparent';
+          btn.style.color = idx === i ? '#f3f4f6' : '#6b7280';
+        });
+        showTab(i);
+      }
+
+      function showTab(i) {
+        const content = document.getElementById('tab-content');
+        if (!content) return;
+        
+        switch(i) {
+          case 0:
+            content.innerHTML = `
+              <div style="max-width:600px;margin:0 auto;">
+                <h2 style="font-size:16px;font-weight:600;margin-bottom:16px;color:#f3f4f6;">Agent Control</h2>
+                <div style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:16px;margin-bottom:12px;">
+                  <p style="font-size:12px;color:#9ca3af;margin-bottom:12px;">Tell the agent what to do:</p>
+                  <div style="display:flex;gap:8px;">
+                    <textarea id="task-input" rows="2" placeholder="Describe your task..." style="flex:1;background:#030712;border:1px solid #374151;border-radius:6px;padding:8px 12px;color:#e5e7eb;font-size:12px;resize:none;font-family:inherit;"></textarea>
+                    <button onclick="runTask()" style="align-self:flex-end;padding:8px 20px;background:#2563eb;color:white;border:none;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;">Run</button>
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                  ${[
+                    {icon:'📝',label:'Fill Form',desc:'Auto-fill current form'},
+                    {icon:'📊',label:'Extract Data',desc:'Scrape page content'},
+                    {icon:'🧭',label:'Navigate',desc:'Go to a URL'},
+                    {icon:'🔍',label:'Find & Click',desc:'Locate and interact'},
+                  ].map(q => `
+                    <div onclick="setTask('${q.desc}')" style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:12px;cursor:pointer;transition:border-color 0.2s;" onmouseover="this.style.borderColor='#374151'" onmouseout="this.style.borderColor='#1f2937'">
+                      <span style="font-size:18px;">${q.icon}</span>
+                      <p style="font-size:12px;color:#d1d5db;margin:4px 0 2px;">${q.label}</p>
+                      <p style="font-size:10px;color:#6b7280;">${q.desc}</p>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+            break;
+          case 1:
+            getSystemInfo().then(info => {
+              const el = document.getElementById('tab-content');
+              if (el) el.innerHTML = `
+                <div style="max-width:600px;margin:0 auto;">
+                  <h2 style="font-size:16px;font-weight:600;margin-bottom:16px;color:#f3f4f6;">System Information</h2>
+                  <div style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:16px;">
+                    ${[
+                      ['Platform', info.platform],
+                      ['Architecture', info.arch],
+                      ['CPUs', info.cpus + ' cores'],
+                      ['Memory', info.memory],
+                      ['Hostname', info.hostname],
+                      ['User', info.user],
+                    ].map(([k,v]) => `
+                      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1f2937;">
+                        <span style="font-size:12px;color:#9ca3af;">${k}</span>
+                        <span style="font-size:12px;color:#e5e7eb;font-family:monospace;">${v}</span>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              `;
+            });
+            break;
+          case 2:
+            content.innerHTML = `
+              <div style="max-width:600px;margin:0 auto;text-align:center;padding:40px 0;">
+                <div style="font-size:48px;margin-bottom:16px;">🎙️</div>
+                <h2 style="font-size:16px;font-weight:600;color:#f3f4f6;margin-bottom:8px;">Voice Commands</h2>
+                <p style="font-size:12px;color:#6b7280;margin-bottom:24px;">Speak to the agent naturally</p>
+                <button onclick="startVoice()" style="padding:16px 32px;background:#2563eb;color:white;border:none;border-radius:12px;font-size:14px;font-weight:500;cursor:pointer;">
+                  🎤 Start Listening
+                </button>
+              </div>
+            `;
+            break;
+          case 3:
+            content.innerHTML = `
+              <div style="max-width:600px;margin:0 auto;">
+                <h2 style="font-size:16px;font-weight:600;margin-bottom:16px;color:#f3f4f6;">Automation Recipes</h2>
+                <p style="font-size:12px;color:#6b7280;margin-bottom:16px;">Pre-built automation workflows you can reuse and share.</p>
+                <div id="recipe-list" style="color:#9ca3af;font-size:12px;text-align:center;padding:40px;">Loading recipes...</div>
+              </div>
+            `;
+            break;
+          case 4:
+            content.innerHTML = `
+              <div style="max-width:600px;margin:0 auto;">
+                <h2 style="font-size:16px;font-weight:600;margin-bottom:16px;color:#f3f4f6;">Settings</h2>
+                <div style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:16px;">
+                  <h3 style="font-size:12px;font-weight:500;color:#d1d5db;margin-bottom:12px;">Privacy</h3>
+                  <div style="font-size:11px;color:#9ca3af;line-height:2;">
+                    <div>✅ All inference runs on-device</div>
+                    <div>✅ Zero screenshots sent externally</div>
+                    <div>✅ Memory stored locally (encrypted)</div>
+                    <div>✅ No telemetry collected</div>
+                  </div>
+                </div>
+              </div>
+            `;
+            break;
+        }
+      }
+
+      function setTask(desc) {
+        const input = document.getElementById('task-input');
+        if (input) { input.value = desc; input.focus(); }
+      }
+
+      async function runTask() {
+        const input = document.getElementById('task-input');
+        if (!input || !input.value.trim()) return;
+        document.getElementById('status-text').textContent = 'Task: ' + input.value;
+        if (hasVlessAPI) {
+          await window.vless.sendToExtension({ type: 'START_TASK', payload: { description: input.value } });
+        }
+      }
+
+      function minimize() { hasVlessAPI && window.vless.minimize(); }
+      function maximize() { hasVlessAPI && window.vless.maximize(); }
+      function closeWindow() { hasVlessAPI && window.vless.close(); }
+      async function startVoice() {
+        if (hasVlessAPI) await window.vless.startVoice();
+      }
+
+      renderApp();
+    </script>
+  </body>
+</html>

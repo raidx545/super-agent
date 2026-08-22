@@ -1,0 +1,13 @@
+{
+  "name": "vless-desktop",
+  "version": "0.1.0",
+  "description": "VLESS Desktop — God-level browser automation companion",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}
