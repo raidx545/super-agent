@@ -64,6 +64,22 @@ export function App() {
         case "TASK_COMPLETE":
           setTask(message.payload.task);
           break;
+        case "PIPELINE_COMPLETE":
+          // Pipeline completed — update task status
+          if (message.payload?.plan?.length > 0) {
+            setTask({
+              id: `pipeline-${Date.now()}`,
+              description: message.payload.planResult?.reasoning || "Pipeline task",
+              status: "completed",
+              plan: { steps: message.payload.plan, estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
+              currentStep: message.payload.plan.length,
+              totalSteps: message.payload.plan.length,
+              startTime: Date.now(),
+              endTime: Date.now(),
+              result: `Pipeline: ${message.payload.piiDetection?.summary?.totalRegions || 0} PII detected, ${message.payload.redactionSummary?.redacted || 0} redacted`,
+            });
+          }
+          break;
         case "UPDATE_DEBUG_OVERLAY":
           if (message.payload.reasoningTrace) {
             setReasoningTrace(message.payload.reasoningTrace);
@@ -127,13 +143,36 @@ export function App() {
   // ── Actions ──────────────────────────────────────────────
 
   const startTask = useCallback(async (description: string, data?: Record<string, string>) => {
+    // Use the full pipeline (PII detection + redaction + planning)
     const response = await chrome.runtime.sendMessage({
-      type: "START_TASK",
+      type: "EXECUTE_PIPELINE",
       payload: { description, data },
       source: "sidepanel",
       timestamp: Date.now(),
     });
-    setTask(response);
+
+    if (response?.plan?.length > 0) {
+      setTask({
+        id: `pipeline-${Date.now()}`,
+        description,
+        status: "completed",
+        plan: { steps: response.plan, estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
+        currentStep: response.plan.length,
+        totalSteps: response.plan.length,
+        startTime: Date.now(),
+        endTime: Date.now(),
+        result: `${response.piiDetection?.summary?.totalRegions || 0} PII detected, ${response.redactionSummary?.redacted || 0} redacted, ${response.plan.length} steps planned`,
+      });
+    } else {
+      // Fallback to simple task execution
+      const fallbackResponse = await chrome.runtime.sendMessage({
+        type: "START_TASK",
+        payload: { description, data },
+        source: "sidepanel",
+        timestamp: Date.now(),
+      });
+      setTask(fallbackResponse);
+    }
   }, []);
 
   const cancelTask = useCallback(async () => {
