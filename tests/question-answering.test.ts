@@ -20,11 +20,23 @@ function field(o: any) {
     pattern: "", options: [], rect: {}, label: o.label ?? "", filledByUser: !!o.value,
   };
 }
-function page(fields: any[]): any {
+function page(fields: any[], elements: any[] = []): any {
   return {
     url: "https://uidai.gov.in/update", title: "Address Update", timestamp: 0,
-    elements: [], textContent: "", metadata: {}, confidence: 1, perceptionTime: 1,
+    elements, textContent: "",
+    metadata: { viewportWidth: 1440, viewportHeight: 900 },
+    confidence: 1, perceptionTime: 1,
     forms: [{ id: "f", action: "", method: "post", fields }],
+  };
+}
+function el(o: any) {
+  return {
+    id: o.id ?? "", tag: o.tag ?? "button", role: o.role ?? "button",
+    text: o.text ?? "", label: o.label ?? "", ariaLabel: "", placeholder: "",
+    type: o.type ?? "",
+    rect: { x: o.x ?? 0, y: o.y ?? 0, width: o.w ?? 100, height: o.h ?? 40 },
+    isVisible: true, isInteractive: true, isDisabled: false,
+    confidence: 1, source: "dom",
   };
 }
 
@@ -280,5 +292,73 @@ describe("answering 'what do I have to fill here'", () => {
   it("handles a page with no inputs", () => {
     const a = answerFromPageState("what do i have to fill", page([]), null);
     expect(a.text).toContain("no input fields");
+  });
+});
+
+describe("the outbound frame is always inspectable", () => {
+  const pipeline = readFileSync(
+    new URL("../src/core/pipeline/full-pipeline.ts", import.meta.url), "utf8");
+  const panel = readFileSync(
+    new URL("../src/ui/components/OutboundFramePanel.tsx", import.meta.url), "utf8");
+
+  it("every result carries the redacted frame, never the raw capture", () => {
+    // "Is the blur working?" should be answerable by looking, not by
+    // trusting — and not only on the rare runs that transmit pixels.
+    expect(pipeline).toContain("redactedFrame: redactedScreenshotUrl");
+    expect(pipeline).not.toContain("redactedFrame: screenshotDataUrl");
+  });
+
+  it("the verification state travels with the frame", () => {
+    expect(pipeline).toContain("frameVerified: redactionVerified");
+  });
+
+  it("the panel distinguishes 'was sent' from 'would be sent'", () => {
+    expect(panel).toContain("Frame that was sent");
+    expect(panel).toContain("Frame that would be sent");
+  });
+
+  it("full size opens via blob, since Chrome blocks data: navigation", () => {
+    expect(panel).toContain("createObjectURL");
+  });
+});
+
+describe("location questions", () => {
+  // Regression: "check where is submit button" starts with an imperative verb
+  // and contains no listed phrase, so it was routed to the action planner —
+  // which planned a click instead of telling the user where the button was.
+  it("recognises an enquiry verb followed by a wh-word", () => {
+    expect(isQuestionTask("check where is submit button")).toBe(true);
+    expect(isQuestionTask("tell me what is missing")).toBe(true);
+    expect(isQuestionTask("find out which fields are empty")).toBe(true);
+  });
+
+  it("does not misread a genuine imperative", () => {
+    expect(isQuestionTask("check the box")).toBe(false);
+    expect(isQuestionTask("show me the money")).toBe(false);
+  });
+
+  it("locates an element by partial phrase match", () => {
+    const a = answerFromPageState(
+      "check where is submit button",
+      page([], [el({ text: "Submit Update Request", x: 700, y: 800, w: 220, h: 44 })]),
+      null
+    );
+    expect(a.source).toBe("on-device");
+    expect(a.text).toContain("Submit Update Request");
+    expect(a.text).toContain("near the bottom");
+  });
+
+  it("tells the user to scroll when the target is off-screen", () => {
+    const a = answerFromPageState(
+      "where is the applicant photo",
+      page([], [el({ tag: "img", role: "img", label: "Applicant Photo", x: 100, y: -400 })]),
+      null
+    );
+    expect(a.text).toContain("scroll up");
+  });
+
+  it("says so when nothing matches", () => {
+    const a = answerFromPageState("where is the payment button", page([], []), null);
+    expect(a.text).toContain("could not find");
   });
 });

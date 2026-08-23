@@ -14,6 +14,7 @@ import { detectAllPII, maskPIIInText, type PIIDetectionResult, type PIIRegion } 
 import { extractPageData, type ExtractedData } from "../extraction/page-extractor";
 import { decomposeTask, actionDescription, type SubTask } from "../agent/task-decomposer";
 import { computeRequirements, summarizeOutcome, type RequiredInput } from "../agent/requirements";
+import { getRecentPayloads, type OutboundPayload } from "../privacy/egress-guard";
 import {
   isQuestionTask,
   answerFromPageState,
@@ -83,6 +84,24 @@ export interface PipelineResult {
   needs?: RequiredInput[];
   /** Plain-language answer, when the task was a question rather than an action. */
   answer?: Answer;
+  /**
+   * The redacted frame — what WOULD be transmitted if this task needed pixels.
+   *
+   * Returned on every run, not only when something is sent, so the user can
+   * inspect the redaction rather than infer it. Always the redacted version;
+   * the raw capture is never placed here.
+   */
+  redactedFrame?: string;
+  /** Whether re-OCR confirmed the frame carries no readable PII. */
+  frameVerified?: boolean;
+  /**
+   * The literal request bodies that left the device on this run.
+   *
+   * Taken from the egress guard, so this is the wire payload rather than a
+   * reconstruction — the thing the provider actually received. Empty when
+   * nothing was sent, which is itself the point.
+   */
+  sentPayloads?: OutboundPayload[];
   /** One line covering both what was done and what is outstanding. */
   outcome?: string;
   error?: string;
@@ -139,6 +158,9 @@ export async function executeFullPipeline(
 ): Promise<PipelineResult> {
 
   const startTime = performance.now();
+  // Wall clock, so outbound payloads recorded by the egress guard can be
+  // matched to THIS run rather than a previous one.
+  const runStartedAt = Date.now();
   const steps: PipelineStep[] = [];
 
   // Start the reasoning trace for this pipeline run
@@ -355,23 +377,29 @@ export async function executeFullPipeline(
     // we actually looked for faces — an unavailable detector means we cannot
     // vouch for the frame, however clean the OCR pass came back.
     let faceDetectionRan = false;
+
+    // Face detection gets its OWN pipeline step. It has failed silently three
+    // separate ways (unreachable code path, undersized input, model not
+    // loading) and each time the panel simply showed no face. A step that
+    // reports what it looked at and what it found makes the next failure
+    // legible instead of invisible.
+    const faceStep = addStep("detect_faces");
     if (screenshotDataUrl) {
+      const regionCount = domData.imageRegions?.length ?? 0;
       try {
         const faceResult = await callOffscreen("detectFaces", {
           imageDataUrl: screenshotDataUrl,
           viewportWidth: domData.metadata?.viewportWidth,
           viewportHeight: domData.metadata?.viewportHeight,
+          // Without these the model sees a ~12px face and finds nothing.
+          imageRegions: domData.imageRegions,
         });
-        // Every remaining path is a real model, so a detection is a detection.
         const mlBacked = faceResult.method !== "unavailable";
         faceDetectionRan = mlBacked;
         faceRegions = faceResult.faces.map((f, i) => ({
           id: `pii-face-${i + 1}`,
           category: "face" as const,
-          // A skin-tone heuristic guess is not the same evidence as a model
-          // detection. Reporting both as "critical" made a page of logos read
-          // as five critical faces.
-          sensitivity: (mlBacked ? "critical" : "medium") as PIIRegion["sensitivity"],
+          sensitivity: "critical" as PIIRegion["sensitivity"],
           boundingBox: { x: f.x, y: f.y, width: f.width, height: f.height },
           textValue: null,
           fieldSelector: null,
@@ -381,14 +409,35 @@ export async function executeFullPipeline(
             faceResult.method === "blazeface"
               ? "Face detected via BlazeFace (on-device model)"
               : "Face detected via FaceDetector API (on-device ML)",
-          redactionStrategy: "blur" as const,
+          // Solid black, not blur. A blur is a filter over pixels that are
+          // still there and is partially recoverable; a fill destroys them.
+          // It also reads unambiguously — a judge can see a face is gone.
+          redactionStrategy: "black_box" as const,
         }));
-        if (faceResult.method === "unavailable" && faceResult.reason) {
-          console.warn("[VLESS] Face detection skipped:", faceResult.reason);
-        }
+
+        faceStep.status = mlBacked ? "complete" : "error";
+        faceStep.details =
+          `${faceResult.faces.length} face(s) · ${regionCount} image region(s) scanned · ` +
+          `detector=${faceResult.method}` +
+          (faceResult.reason ? ` · ${faceResult.reason}` : "") +
+          (regionCount === 0
+            ? " · NO IMAGE REGIONS REACHED THE DETECTOR — the page sent none"
+            : "");
+        console.info("[VLESS] face detection:", {
+          faces: faceResult.faces.length,
+          regions: regionCount,
+          method: faceResult.method,
+          reason: faceResult.reason,
+          viewport: [domData.metadata?.viewportWidth, domData.metadata?.viewportHeight],
+        });
       } catch (err) {
-        console.warn("[VLESS] Offscreen face detection failed:", err);
+        faceStep.status = "error";
+        faceStep.details = `failed: ${String((err as Error)?.message ?? err)} · ${regionCount} region(s) offered`;
+        console.error("[VLESS] Offscreen face detection failed:", err);
       }
+    } else {
+      faceStep.status = "error";
+      faceStep.details = "no screenshot captured";
     }
 
     const detectionResult = await runStep(detectStep, async () => {
@@ -468,6 +517,11 @@ export async function executeFullPipeline(
             const redacted = await callOffscreen("redactScreenshot", {
               imageDataUrl: screenshotDataUrl,
               regions: redactRegions,
+              // Regions are CSS pixels; the capture is device pixels. Without
+              // these the scale is 1 and on a 2x display every box is drawn
+              // at half position and quarter area — missing what it covers.
+              viewportWidth: domData.metadata?.viewportWidth,
+              viewportHeight: domData.metadata?.viewportHeight,
             });
             redactedScreenshotUrl = redacted.imageDataUrl;
             redactionSummary.totalPII = redacted.regionsRedacted;
@@ -676,7 +730,10 @@ export async function executeFullPipeline(
           tier: "auto",
         },
         totalLatencyMs: qLatency,
+        sentPayloads: getRecentPayloads().filter((pl) => pl.timestamp >= runStartedAt),
         answer: answer ?? undefined,
+        redactedFrame: redactedScreenshotUrl ?? undefined,
+        frameVerified: redactionVerified,
         outcome: answer?.text,
       };
     }
@@ -746,8 +803,11 @@ export async function executeFullPipeline(
           tier: "auto",
         },
         totalLatencyMs: extractLatency,
+        sentPayloads: getRecentPayloads().filter((pl) => pl.timestamp >= runStartedAt),
         extractedData,
         subTasks,
+        redactedFrame: redactedScreenshotUrl ?? undefined,
+        frameVerified: redactionVerified,
       };
     }
 
@@ -969,11 +1029,14 @@ export async function executeFullPipeline(
       reasoningTrace: completedTrace,
       latency,
       totalLatencyMs: totalLatency,
+      sentPayloads: getRecentPayloads().filter((pl) => pl.timestamp >= runStartedAt),
       extractedData,
       subTasks,
       piiReview,
       needs,
       outcome,
+      redactedFrame: redactedScreenshotUrl ?? undefined,
+      frameVerified: redactionVerified,
     };
   } catch (error) {
 

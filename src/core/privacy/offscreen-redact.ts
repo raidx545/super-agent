@@ -262,7 +262,8 @@ function blobToDataURL(blob: Blob): Promise<string> {
 export async function detectFacesOffscreen(
   imageDataUrl: string,
   viewportWidth?: number,
-  viewportHeight?: number
+  viewportHeight?: number,
+  imageRegions?: Array<{ x: number; y: number; width: number; height: number }>
 ): Promise<{
   faces: Array<{ x: number; y: number; width: number; height: number; confidence: number }>;
   method: FaceMethod;
@@ -272,8 +273,6 @@ export async function detectFacesOffscreen(
   const blob = await response.blob();
   const bitmap = await createImageBitmap(blob);
 
-  // A real <canvas>, not OffscreenCanvas: FaceDetector.detect() accepts
-  // canvas elements across more Chrome builds than it does OffscreenCanvas.
   const canvas = document.createElement("canvas");
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
@@ -281,21 +280,94 @@ export async function detectFacesOffscreen(
   ctx.drawImage(bitmap, 0, 0);
   bitmap.close();
 
-  const { faces, method, reason } = await detectFaces(canvas);
-
-  // Image pixels → viewport pixels.
+  // Image pixels ↔ viewport pixels.
   const sx = viewportWidth && viewportWidth > 0 ? canvas.width / viewportWidth : 1;
   const sy = viewportHeight && viewportHeight > 0 ? canvas.height / viewportHeight : 1;
 
-  return {
-    faces: faces.map((f) => ({
+  const out: Array<{ x: number; y: number; width: number; height: number; confidence: number }> = [];
+  let method: FaceMethod = "unavailable";
+  let reason: string | undefined;
+
+  // ── Region-gated detection ──────────────────────────────────
+  //
+  // BlazeFace short-range resizes its input to 128x128. On a Retina
+  // full-page capture a passport photo is ~260 device px in a 2880 px
+  // frame, which becomes roughly 12 px in the tensor — invisible. Running
+  // the model on the WHOLE screenshot therefore detects nothing, which is
+  // exactly what happened on the UIDAI form.
+  //
+  // So crop to each image region and upscale it first. This is also far
+  // cheaper than it looks: only image-like elements are considered, which
+  // on a typical page is a few percent of the viewport.
+  const MIN_DETECT_SIDE = 256;
+
+  for (const region of imageRegions ?? []) {
+    const cx = Math.max(0, Math.round(region.x * sx));
+    const cy = Math.max(0, Math.round(region.y * sy));
+    const cw = Math.min(Math.round(region.width * sx), canvas.width - cx);
+    const ch = Math.min(Math.round(region.height * sy), canvas.height - cy);
+    if (cw <= 0 || ch <= 0) continue;
+
+    // Upscale so the face is large enough to survive the model's resize.
+    const upscale = Math.max(1, MIN_DETECT_SIDE / Math.min(cw, ch));
+    const dw = Math.round(cw * upscale);
+    const dh = Math.round(ch * upscale);
+
+    const crop = document.createElement("canvas");
+    crop.width = dw;
+    crop.height = dh;
+    const cctx = crop.getContext("2d", { willReadFrequently: true })!;
+    cctx.imageSmoothingQuality = "high";
+    cctx.drawImage(canvas, cx, cy, cw, ch, 0, 0, dw, dh);
+
+    const res = await detectFaces(crop);
+    if (res.method !== "unavailable") method = res.method;
+    if (res.reason) reason = res.reason;
+
+    for (const f of res.faces) {
+      // Crop pixels → image pixels → viewport pixels.
+      out.push({
+        x: (cx + f.x / upscale) / sx,
+        y: (cy + f.y / upscale) / sy,
+        width: (f.width / upscale) / sx,
+        height: (f.height / upscale) / sy,
+        confidence: f.confidence,
+      });
+    }
+  }
+
+  // A whole-frame pass still catches faces large enough to be seen without
+  // cropping — a webcam preview, a hero portrait, a video call.
+  const whole = await detectFaces(canvas);
+  if (whole.method !== "unavailable") method = whole.method;
+  if (whole.reason) reason = whole.reason;
+  for (const f of whole.faces) {
+    out.push({
       x: f.x / sx,
       y: f.y / sy,
       width: f.width / sx,
       height: f.height / sy,
       confidence: f.confidence,
-    })),
-    method,
-    reason,
-  };
+    });
+  }
+
+  return { faces: dedupeFaces(out), method, reason };
+}
+
+/** Drop near-duplicates where a region crop and the whole-frame pass agree. */
+function dedupeFaces<T extends { x: number; y: number; width: number; height: number; confidence: number }>(
+  faces: T[]
+): T[] {
+  const kept: T[] = [];
+  for (const f of faces.slice().sort((a, b) => b.confidence - a.confidence)) {
+    const overlaps = kept.some((k) => {
+      const ix = Math.max(0, Math.min(f.x + f.width, k.x + k.width) - Math.max(f.x, k.x));
+      const iy = Math.max(0, Math.min(f.y + f.height, k.y + k.height) - Math.max(f.y, k.y));
+      const inter = ix * iy;
+      const minArea = Math.min(f.width * f.height, k.width * k.height);
+      return minArea > 0 && inter / minArea > 0.4;
+    });
+    if (!overlaps) kept.push(f);
+  }
+  return kept;
 }

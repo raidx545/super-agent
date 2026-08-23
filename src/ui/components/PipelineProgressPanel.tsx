@@ -18,6 +18,7 @@ const PHASE_LABELS: Record<string, string> = {
   capture: "Capturing page",
   vision_perception: "Visual perception",
   detect_pii: "Detecting PII",
+  detect_faces: "Detecting faces",
   redact: "Redacting",
   verify_redaction: "Verifying redaction",
   init_server: "Selecting planner",

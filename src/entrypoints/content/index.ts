@@ -290,6 +290,7 @@ export default defineContentScript({
         elements,
         forms,
         textContent: pageText.slice(0, 5000),
+        imageRegions: collectImageRegions(),
         metadata: {
           hasCAPTCHA:
             /recaptcha|hcaptcha|turnstile|cf-challenge/i.test(pageHTML),
@@ -1175,6 +1176,45 @@ export default defineContentScript({
         return false;
       if (parseFloat(style.opacity) < 0.1) return false;
       return true;
+    }
+
+    /**
+     * Every image-like element big enough to hold a recognisable face.
+     *
+     * Face detection is region-gated on these: a full-page capture reduces a
+     * passport photo to roughly 12px in BlazeFace's input, which detects
+     * nothing. Cropping to these rects and upscaling is what makes it work.
+     */
+    function collectImageRegions() {
+      const SELECTOR = "img, canvas, svg, picture, video, [style*='background-image']";
+      const out: Array<{ tag: string; x: number; y: number; width: number; height: number }> = [];
+      const seen = new Set<Element>();
+
+      document.querySelectorAll(SELECTOR).forEach((el) => {
+        if (seen.has(el)) return;
+        seen.add(el);
+
+        const r = el.getBoundingClientRect();
+        // Too small to contain a face; icons and spacers dominate otherwise.
+        if (r.width < 32 || r.height < 32) return;
+        // Off-screen: the capture only covers the viewport.
+        if (r.bottom < 0 || r.top > window.innerHeight) return;
+
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return;
+        if (parseFloat(style.opacity) < 0.1) return;
+
+        out.push({
+          tag: el.tagName.toLowerCase(),
+          x: Math.max(0, r.x),
+          y: Math.max(0, r.y),
+          width: r.width,
+          height: r.height,
+        });
+      });
+
+      // Cap the work: 24 regions is far more than any real page needs.
+      return out.slice(0, 24);
     }
 
     /** Radio and checkbox carry a fixed option token in `.value`. */

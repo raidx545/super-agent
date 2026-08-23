@@ -144,13 +144,24 @@ export interface OffscreenMethods {
         x: number; y: number; width: number; height: number;
         strategy: "blur" | "black_box" | "pixelate" | "mask_text";
       }>;
+      /** CSS-pixel viewport size. REQUIRED to place boxes correctly on a
+       *  HiDPI capture — without it the scale factor defaults to 1 and every
+       *  box lands at half position and half size. */
+      viewportWidth?: number;
+      viewportHeight?: number;
     };
     result: { imageDataUrl: string; regionsRedacted: number };
   };
   /** Detect faces in a screenshot. Offscreen-only: needs a real canvas and
    *  the FaceDetector API, neither of which exists in a service worker. */
   detectFaces: {
-    params: { imageDataUrl: string; viewportWidth?: number; viewportHeight?: number };
+    params: {
+      imageDataUrl: string;
+      viewportWidth?: number;
+      viewportHeight?: number;
+      /** Image-element rects to crop and upscale before detecting. */
+      imageRegions?: Array<{ x: number; y: number; width: number; height: number }>;
+    };
     result: {
       faces: Array<{ x: number; y: number; width: number; height: number; confidence: number }>;
       method: "blazeface" | "facedetector" | "unavailable";

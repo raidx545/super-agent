@@ -148,10 +148,56 @@ export async function guardedFetch(
   }
 
   stats.cleanRequests++;
+  recordPayload(sanitizeUrl(url), method, bodyStr);
   return fetch(input, init);
 }
 
 const METHODS_WITH_BODY = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// ── Outbound payload record ──────────────────────────────────
+//
+// The exact body of each request that was allowed through, kept so the
+// user can read what the provider received rather than infer it from a
+// description. These have already passed the PII scan above; that is why
+// they are safe to hold and safe to display.
+
+export interface OutboundPayload {
+  url: string;
+  method: string;
+  /** The request body as sent. Truncated for display if very large. */
+  body: string;
+  bytes: number;
+  truncated: boolean;
+  timestamp: number;
+}
+
+/** Image payloads run to megabytes; nobody reads that in a side panel. */
+const MAX_PAYLOAD_CHARS = 60_000;
+const MAX_PAYLOADS = 5;
+
+let payloads: OutboundPayload[] = [];
+
+function recordPayload(url: string, method: string, body: string): void {
+  const truncated = body.length > MAX_PAYLOAD_CHARS;
+  payloads.push({
+    url,
+    method,
+    body: truncated ? body.slice(0, MAX_PAYLOAD_CHARS) : body,
+    bytes: byteLength(body),
+    truncated,
+    timestamp: Date.now(),
+  });
+  if (payloads.length > MAX_PAYLOADS) payloads = payloads.slice(-MAX_PAYLOADS);
+}
+
+/** Most recent first. */
+export function getRecentPayloads(): OutboundPayload[] {
+  return [...payloads].reverse();
+}
+
+export function clearRecentPayloads(): void {
+  payloads = [];
+}
 
 // ── Page-monitor intake ──────────────────────────────────────
 

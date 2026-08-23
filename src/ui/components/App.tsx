@@ -12,6 +12,8 @@ import { PIIResultsPanel } from "./PIIResultsPanel";
 import { PIIReviewPanel } from "./PIIReviewPanel";
 import { NeedsInputPanel } from "./NeedsInputPanel";
 import { AnswerPanel } from "./AnswerPanel";
+import { OutboundFramePanel } from "./OutboundFramePanel";
+import { OutboundPayloadPanel } from "./OutboundPayloadPanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 
 import { LearningLog } from "./LearningLog";
@@ -52,6 +54,8 @@ export function App() {
   const [piiReview, setPiiReview] = useState<PIIReviewField[] | null>(null);
   const [needs, setNeeds] = useState<RequiredInput[] | null>(null);
   const [answer, setAnswer] = useState<Answer | null>(null);
+  const [frame, setFrame] = useState<{ url: string; verified?: boolean; sent?: boolean } | null>(null);
+  const [payloads, setPayloads] = useState<any[] | null>(null);
   const [lastTask, setLastTask] = useState<{ description: string; data?: Record<string, string> } | null>(null);
   const [reasoningTrace, setReasoningTrace] = useState<ReasoningStep[]>([]);
   const [, _setPageState] = useState<PageState | null>(null);
@@ -128,6 +132,16 @@ export function App() {
           }
           if (message.payload?.answer) {
             setAnswer(message.payload.answer);
+          }
+          if (message.payload?.sentPayloads) {
+            setPayloads(message.payload.sentPayloads);
+          }
+          if (message.payload?.redactedFrame) {
+            setFrame({
+              url: message.payload.redactedFrame,
+              verified: message.payload.frameVerified,
+              sent: Boolean(message.payload.answer?.frameSent),
+            });
           }
           // An extraction task completes with an empty plan — it never goes
           // through the planner — so it must be handled before the plan-length
@@ -233,6 +247,8 @@ export function App() {
     setPiiReview(null);
     setNeeds(null);
     setAnswer(null);
+    setFrame(null);
+    setPayloads(null);
     setLastTask({ description, data });
     setProgress({ currentPhase: "capture", steps: [], elapsedMs: 0 });
     setTask({
@@ -274,6 +290,16 @@ export function App() {
     }
     if (response?.answer) {
       setAnswer(response.answer);
+    }
+    if (response?.sentPayloads) {
+      setPayloads(response.sentPayloads);
+    }
+    if (response?.redactedFrame) {
+      setFrame({
+        url: response.redactedFrame,
+        verified: response.frameVerified,
+        sent: Boolean(response.answer?.frameSent),
+      });
     }
 
     // An empty plan is a legitimate outcome — extraction tasks never
@@ -482,6 +508,14 @@ export function App() {
             {extractedData && <ExtractedDataPanel data={extractedData} />}
             {!progress && piiRegions && piiRegions.length > 0 && (
               <PIIResultsPanel regions={piiRegions} />
+            )}
+            {!progress && payloads && <OutboundPayloadPanel payloads={payloads} />}
+            {!progress && frame && (
+              <OutboundFramePanel
+                frame={frame.url}
+                verified={frame.verified}
+                wasSent={frame.sent}
+              />
             )}
           </TaskInput>
         )}

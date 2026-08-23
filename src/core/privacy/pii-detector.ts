@@ -557,7 +557,8 @@ export async function detectPIIFromVision(
       detectionMethod: face.confidence > 0.9
         ? "Face detected via Chrome FaceDetector API (ML-based)"
         : "Face detected via heuristic analysis",
-      redactionStrategy: "blur",
+      // Faces are destroyed, not softened — see the pipeline for the reasoning.
+      redactionStrategy: "black_box",
     });
   }
 

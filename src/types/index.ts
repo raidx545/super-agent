@@ -31,6 +31,14 @@ export interface PageState {
   elements: PageElement[];
   forms: FormData[];
   textContent: string;
+  /**
+   * Rects of every image-like element, in CSS pixels.
+   *
+   * Face detection needs these: run on a full-page capture, a passport photo
+   * shrinks to ~12px in BlazeFace's 128x128 input tensor and is invisible.
+   * Cropping to these regions and upscaling is what makes detection possible.
+   */
+  imageRegions?: ImageRegion[];
   metadata: PageMetadata;
   confidence: number;
   perceptionTime: number; // ms
@@ -57,6 +65,14 @@ export interface FormField {
   filledByUser: boolean;
   /** Selection state for radio/checkbox. Undefined for other input types. */
   checked?: boolean;
+}
+
+export interface ImageRegion {
+  tag: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface PageMetadata {

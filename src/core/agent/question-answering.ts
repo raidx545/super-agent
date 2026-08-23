@@ -51,6 +51,17 @@ const WH_OPENERS = /^(what|which|where|when|why|who|whom|whose|how)\b/i;
 const AUX_OPENERS =
   /^(is|are|do|does|did|has|have|was|were|can|could|will|would|should|am)\s+(i|you|we|they|he|she|there|my|any)\b/i;
 
+/**
+ * An enquiry verb followed by an interrogative: "check where is the submit
+ * button", "tell me what is missing", "find out which fields are empty".
+ *
+ * These are questions wearing an imperative hat — the verb is "check", but
+ * what is being asked for is information, not an action. Listing exact
+ * phrases ("check whether", "check if") missed every other combination.
+ */
+const ENQUIRY_OPENERS =
+  /^(check|tell me|find out|see|show me|know|look up|identify|locate)\s+(where|what|which|who|whom|whose|when|why|how|whether|if)\b/i;
+
 const QUESTION_PHRASES = [
   "check whether",
   "check if",
@@ -89,6 +100,7 @@ export function isQuestionTask(taskDescription: string): boolean {
   if (t.endsWith("?")) return true;
   if (WH_OPENERS.test(t)) return true;
   if (AUX_OPENERS.test(t)) return true;
+  if (ENQUIRY_OPENERS.test(t)) return true;
   if (QUESTION_PHRASES.some((p) => t.includes(p))) return true;
 
   // 2. No question signal: an action verb makes it an instruction.
@@ -121,6 +133,33 @@ export function answerFromPageState(
 ): Answer {
   const q = question.toLowerCase();
   const fields = domData.forms.flatMap((f) => f.fields);
+
+  // ── "Where is the submit button?" ──
+  //
+  // Checked FIRST, ahead of the upload branch. "Where is my photo" and "did I
+  // upload my photo" share the word "photo" but ask different things: one
+  // wants a location, the other a status. Whichever branch runs first wins,
+  // so the more specific signal — the word "where" — has to be tested first.
+  //
+  // The page state already holds every element's rect, so this is answerable
+  // exactly, in words the user can act on.
+  if (/\bwhere\b/.test(q)) {
+    const target = findElementByPhrase(q, domData);
+    if (target) {
+      return {
+        text: `"${target.label}" is ${describePosition(target.rect, domData)}.`,
+        source: "on-device",
+        confidence: 0.92,
+        detail: `${target.tag}${target.role ? ` · role=${target.role}` : ""} · ${Math.round(target.rect.x)},${Math.round(target.rect.y)}`,
+      };
+    }
+    return {
+      text: "I could not find anything on this page matching that.",
+      source: "on-device",
+      confidence: 0.6,
+      needsVision: true,
+    };
+  }
 
   // ── Upload questions: "did I upload my photo?" ──
   if (FILE_WORDS.test(q)) {
@@ -284,6 +323,71 @@ export function answerFromPageState(
     confidence: 0,
     needsVision: true,
   };
+}
+
+/** Stop-words that carry no identifying signal when matching an element. */
+const PHRASE_NOISE = new Set([
+  "check", "where", "is", "the", "a", "an", "on", "in", "this", "that", "page",
+  "tell", "me", "find", "out", "locate", "show", "button", "field", "link",
+  "at", "of", "my", "it", "please", "can", "you", "see", "which", "what",
+]);
+
+/**
+ * Find the element a question is referring to.
+ *
+ * Scores candidates by how many meaningful words of the question appear in
+ * their label or text, so "where is submit button" reaches a control
+ * labelled "Submit Update Request" without needing an exact match.
+ */
+function findElementByPhrase(
+  question: string,
+  domData: PageState
+): { label: string; tag: string; role: string; rect: { x: number; y: number; width: number; height: number } } | null {
+  const words = question
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !PHRASE_NOISE.has(w));
+  if (words.length === 0) return null;
+
+  let best: { score: number; el: any } | null = null;
+
+  for (const el of domData.elements) {
+    const hay = `${el.label || ""} ${el.text || ""} ${el.ariaLabel || ""} ${el.type || ""}`.toLowerCase();
+    if (!hay.trim()) continue;
+    const score = words.reduce((n, w) => (hay.includes(w) ? n + 1 : n), 0);
+    if (score === 0) continue;
+    if (!best || score > best.score) best = { score, el };
+  }
+
+  if (!best) return null;
+  const el = best.el;
+  return {
+    label: (el.label || el.text || el.ariaLabel || el.tag || "element").trim().slice(0, 60),
+    tag: el.tag,
+    role: el.role,
+    rect: el.rect,
+  };
+}
+
+/** Describe a rect in words, relative to the viewport. */
+function describePosition(
+  rect: { x: number; y: number; width: number; height: number },
+  domData: PageState
+): string {
+  const vw = domData.metadata?.viewportWidth ?? 1440;
+  const vh = domData.metadata?.viewportHeight ?? 900;
+
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+
+  const horizontal = cx < vw / 3 ? "on the left" : cx > (vw * 2) / 3 ? "on the right" : "in the centre";
+
+  if (cy < 0) return `above the current view — scroll up to reach it (${horizontal})`;
+  if (cy > vh) return `below the current view — scroll down to reach it (${horizontal})`;
+
+  const vertical = cy < vh / 3 ? "near the top" : cy > (vh * 2) / 3 ? "near the bottom" : "in the middle";
+  return `${vertical} of the visible page, ${horizontal}`;
 }
 
 /**

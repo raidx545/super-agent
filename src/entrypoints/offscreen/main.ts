@@ -22,9 +22,21 @@ serveOffscreen({
   getModelStatuses: () => getModelStatuses(),
   warmModels: ({ ids }) => warmModels(ids),
   runOcr: (params) => runOcr(params),
-  redactScreenshot: (params) => redactScreenshot(params.imageDataUrl, params.regions),
+  redactScreenshot: (params) =>
+    redactScreenshot(
+      params.imageDataUrl,
+      params.regions,
+      // Dropping these silently rescaled every box by 1/devicePixelRatio.
+      params.viewportWidth,
+      params.viewportHeight
+    ),
   detectFaces: (params) =>
-    detectFacesOffscreen(params.imageDataUrl, params.viewportWidth, params.viewportHeight),
+    detectFacesOffscreen(
+      params.imageDataUrl,
+      params.viewportWidth,
+      params.viewportHeight,
+      params.imageRegions
+    ),
   verifyRedaction: (params) => verifyRedactionOffscreen(params.imageDataUrl),
   perceiveScreen: (params) => perceiveScreen(params.imageDataUrl),
   groundPhrase: (params) => groundPhrase(params.imageDataUrl, params.phrase),

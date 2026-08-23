@@ -21,6 +21,8 @@ import {
   resetEgressStats,
   recordPageObservations,
   sanitizeUrl,
+  getRecentPayloads,
+  clearRecentPayloads,
 } from "../src/core/privacy/egress-guard";
 
 // A Verhoeff-valid Aadhaar and a Luhn-valid card, so the validators fire.
@@ -216,5 +218,67 @@ describe("page observations", () => {
     const stats = getEgressStats();
     expect(stats.cleanRequests).toBe(1);
     expect(stats.events).toHaveLength(0);
+  });
+});
+
+describe("outbound payloads are recorded for inspection", () => {
+  let realFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    resetEgressStats();
+    clearRecentPayloads();
+    realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as any;
+  });
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  it("records the body that was actually sent", async () => {
+    const body = JSON.stringify({ prompt: "Fill the form. Field 0: [PII:aadhaar]" });
+    await guardedFetch("https://api.example.com/v1/plan", { method: "POST", body });
+
+    const recent = getRecentPayloads();
+    expect(recent).toHaveLength(1);
+    expect(recent[0].body).toBe(body);
+    expect(recent[0].method).toBe("POST");
+  });
+
+  it("does NOT record a blocked payload", async () => {
+    // A blocked request never reaches the network, so it never happened.
+    await guardedFetch("https://api.example.com/v1/plan", {
+      method: "POST",
+      body: JSON.stringify({ prompt: `aadhaar ${VALID_AADHAAR}` }),
+    }).catch(() => undefined);
+
+    expect(getRecentPayloads()).toHaveLength(0);
+  });
+
+  it("a recorded payload re-scans clean", async () => {
+    // The badge in the panel is computed this way; it must agree with the guard.
+    await guardedFetch("https://api.example.com/v1/plan", {
+      method: "POST",
+      body: JSON.stringify({ fields: [{ label: "Aadhaar", hasValue: true }] }),
+    });
+    const [p] = getRecentPayloads();
+    expect(scanTextForPII(p.body)).toHaveLength(0);
+  });
+
+  it("keeps only the most recent few, newest first", async () => {
+    for (let i = 0; i < 8; i++) {
+      await guardedFetch("https://api.example.com/v1/plan", {
+        method: "POST",
+        body: JSON.stringify({ n: i }),
+      });
+    }
+    const recent = getRecentPayloads();
+    expect(recent.length).toBeLessThanOrEqual(5);
+    expect(recent[0].body).toContain('"n":7');
+  });
+
+  it("strips query strings from recorded URLs", async () => {
+    await guardedFetch("https://api.example.com/v1/plan?key=secret", {
+      method: "POST",
+      body: "{}",
+    });
+    expect(getRecentPayloads()[0].url).not.toContain("secret");
   });
 });
