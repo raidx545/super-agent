@@ -25,6 +25,7 @@ import type { PipelineResult } from "../../core/pipeline/full-pipeline";
 import type { ModelId, OcrResult } from "../../types/runtime";
 import { log, narratePerception, narrateAction, narrateResult, narrateRetry, narrateLearning } from "../../core/agent/learning-log";
 import { startMonitoring, stopMonitoring, isClean, getStats } from "../../core/privacy/network-monitor";
+import { getEgressStats, recordPageObservations } from "../../core/privacy/egress-guard";
 import { validateForm } from "../../core/agent/validator";
 import { callOffscreen, isRuntimeEnvelope } from "../../core/runtime/messaging";
 
@@ -83,6 +84,11 @@ export default defineBackground({
         }
       }
     });
+
+    // ── Task history ─────────────────────────────────────
+    // Short rolling memory so follow-up instructions have context.
+    const MAX_RECENT_TASKS = 5;
+    const recentTasks: string[] = [];
 
     // ── SW Keepalive ─────────────────────────────────────
     // MV3 service workers die after ~30s of inactivity.
@@ -193,6 +199,14 @@ export default defineBackground({
           return handleCheckProviders();
         case "DO_CAPTURE_TAB":
           return handleCaptureTab();
+        case "GET_TRIPWIRE_STATS":
+          // The background owns the merged ledger: blocked extension
+          // egress plus observed page traffic relayed from the MAIN-world
+          // tripwire.
+          return getEgressStats();
+        case "REPORT_PAGE_EGRESS":
+          recordPageObservations(message.payload as any);
+          return { success: true };
         default:
           return { error: `Unknown message type: ${message.type}` };
       }
@@ -824,6 +838,13 @@ export default defineBackground({
         taskDescription: payload.description,
         dataContext: payload.data,
         tabId: payload.tabId,
+        // So a follow-up like "submit form" is read as a continuation of the
+        // fill that preceded it, rather than a fresh fill request.
+        recentTasks: [...recentTasks],
+        // Stream each phase to the side panel as it happens.
+        onProgress: (update: unknown) => {
+          broadcast({ type: "PIPELINE_PROGRESS", payload: update });
+        },
       });
 
       // Log the result
@@ -832,11 +853,22 @@ export default defineBackground({
         `${result.redactionSummary.redacted} redacted`
       );
 
-      if (result.plan.length > 0) {
+      if (result.extractedData) {
+        // Extraction tasks complete with no action plan by design.
+        log("success",
+          `Extracted ${result.extractedData.summary.fieldCount} fields ` +
+          `(${result.extractedData.summary.maskedFieldCount} masked) on-device`
+        );
+      } else if (result.plan.length > 0) {
         log("success", `Action plan: ${result.plan.length} steps from ${result.planResult.provider}`);
       } else {
         log("warning", "No action plan generated");
       }
+
+      // Remember the task for the next run's context. Descriptions only —
+      // they are masked before they reach any provider.
+      recentTasks.push(payload.description);
+      if (recentTasks.length > MAX_RECENT_TASKS) recentTasks.shift();
 
       // Broadcast pipeline result to side panel
       broadcast({ type: "PIPELINE_COMPLETE", payload: result });

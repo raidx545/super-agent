@@ -47,14 +47,23 @@ export function verifyLuhn(num: string): boolean {
   return sum % 10 === 0;
 }
 
-/** PAN card format: 5 letters + 4 digits + 1 letter, first char = valid series */
+/**
+ * PAN card format: 5 letters + 4 digits + 1 letter.
+ *
+ * Structure: characters 1-3 are an alphabetic series (any letters),
+ * character 4 is the holder type, character 5 is the first letter of the
+ * surname/entity name, then 4 digits and a check letter.
+ *
+ * The holder-type set was previously applied to character 1 as a "series"
+ * check, which rejected valid PANs whose series began outside that set.
+ * Only character 4 is constrained.
+ */
 export function verifyPANFormat(pan: string): boolean {
   if (!/^[A-Z]{5}\d{4}[A-Z]$/.test(pan)) return false;
-  // First letter must be one of: A,B,C,F,G,H,J,L,P,T
-  const validFirst = /^[ABCFGHJLPT]/.test(pan);
-  // Fourth letter indicates type: P=Individual, C=Company, H=HUF, F=Partnership
-  const validFourth = /^[PCFHABLGJTE]$/.test(pan[3]);
-  return validFirst && validFourth;
+  // 4th char = holder type. P=Individual, C=Company, H=HUF, F=Firm,
+  // A=AOP, T=Trust, B=BOI, L=Local authority, J=Artificial juridical
+  // person, G=Government, K=Krish (trust), E=LLP.
+  return /^[PCHFATBLJGKE]$/.test(pan[3]);
 }
 
 /** IFSC code: 4 letters + 0 + 6 alphanumeric */
@@ -70,14 +79,19 @@ export function verifyUPIFormat(upi: string): boolean {
   return validProviders.includes(provider);
 }
 
-/** Phone number: Indian mobile must start with 6-9 and be exactly 10 digits */
+/**
+ * Phone number: Indian mobile must start with 6-9 and be exactly 10 digits.
+ * The subscriber number is [6-9] followed by NINE more digits — an earlier
+ * \d{8} here made this function return false for every real number, which
+ * silently disabled phone detection everywhere it is used.
+ */
 export function verifyIndianPhone(num: string): boolean {
   const digits = num.replace(/[^\d]/g, "");
   if (digits.length === 12 && digits.startsWith("91")) {
-    return /^[6-9]\d{8}$/.test(digits.slice(2));
+    return /^[6-9]\d{9}$/.test(digits.slice(2));
   }
   if (digits.length === 10) {
-    return /^[6-9]\d{8}$/.test(digits);
+    return /^[6-9]\d{9}$/.test(digits);
   }
   return false;
 }
@@ -188,7 +202,9 @@ const PII_RULES: PIIRule[] = [
     category: "password",
     sensitivity: "critical",
     patterns: [],
-    fieldPatterns: [/password/i, /passwd/i, /secret/i, /pin\s*code/i, /otp/i],
+    // "pin code" deliberately NOT here: in India that is a POSTAL code, and
+    // claiming it as a password made every address form report a credential.
+    fieldPatterns: [/password/i, /passwd/i, /\bsecret\b/i, /\botp\b/i, /\bcvv\b/i, /\bmpin\b/i, /atm\s*pin/i],
     keywords: ["password", "passwd", "secret"],
     redactionStrategy: "black_box",
   },
@@ -196,7 +212,9 @@ const PII_RULES: PIIRule[] = [
     category: "aadhaar",
     sensitivity: "critical",
     patterns: [], // Checksum-gated: verifyAadhaarChecksum applied at detection time
-    fieldPatterns: [/aadhaar/i, /uid/i, /aadhar/i],
+    // \buid\b, not /uid/: the bare substring matched "UIDAI" and flagged
+    // every field on a UIDAI consent form as an Aadhaar number.
+    fieldPatterns: [/aadhaar/i, /aadhar/i, /\buid\b/i, /\bvid\b/i],
     keywords: ["aadhaar", "aadhar", "uid"],
     redactionStrategy: "black_box",
   },
@@ -212,7 +230,7 @@ const PII_RULES: PIIRule[] = [
     category: "phone",
     sensitivity: "high",
     patterns: [], // Checksum-gated: verifyIndianPhone applied at detection time
-    fieldPatterns: [/phone/i, /mobile/i, /contact/i, /tele/i, /cell/i],
+    fieldPatterns: [/phone/i, /mobile/i, /contact\s*(no|number)/i, /telephone/i, /\bcell\b/i],
     keywords: ["phone", "mobile", "contact number", "telephone"],
     redactionStrategy: "mask_text",
   },
@@ -228,7 +246,7 @@ const PII_RULES: PIIRule[] = [
     category: "bank_account",
     sensitivity: "critical",
     patterns: [], // No generic regex — only detect via field context to avoid false positives
-    fieldPatterns: [/account/i, /acc\s*no/i, /bank\s*acc/i, /a\/c/i],
+    fieldPatterns: [/account\s*(no|number)/i, /acc\s*no/i, /bank\s*acc/i, /a\/c/i],
     keywords: ["account number", "bank account", "a/c"],
     redactionStrategy: "black_box",
   },
@@ -307,6 +325,11 @@ const PII_RULES: PIIRule[] = [
   },
 ];
 
+/** `exec` loops require a global regex; rule patterns are declared without one. */
+function ensureGlobal(flags: string): string {
+  return flags.includes("g") ? flags : flags + "g";
+}
+
 // ── DOM-Based PII Detection ──────────────────────────────────
 
 export function detectPIIFromDOM(
@@ -342,7 +365,7 @@ export function detectPIIFromDOM(
   // Scan form fields
   for (const form of forms) {
     for (const field of form.fields) {
-      const fieldContext = `${field.name} ${field.id} ${field.label} ${field.type} ${field.pattern}`.toLowerCase();
+      const fieldContext = buildFieldContext(field);
       const matchingRules = matchFieldToRules(fieldContext, field.type);
 
       for (const rule of matchingRules) {
@@ -385,11 +408,17 @@ export function detectPIIFromDOM(
     }
   }
 
-  // Scan page text for visible PII
+  // Scan page text for visible PII.
+  // The rule patterns are declared without /g, and `exec` on a non-global
+  // regex never advances lastIndex — iterating one directly is an infinite
+  // loop on any page containing an email, IP, or dd/mm/yyyy date. Clone
+  // with /g per scan so each loop terminates and matches are independent.
   for (const rule of PII_RULES) {
-    for (const pattern of rule.patterns) {
+    for (const rulePattern of rule.patterns) {
+      const pattern = new RegExp(rulePattern.source, ensureGlobal(rulePattern.flags));
       let match;
       while ((match = pattern.exec(pageText)) !== null) {
+        if (match[0].length === 0) { pattern.lastIndex++; continue; }
         // Only add if not already detected via form fields
         const alreadyDetected = regions.some(
           (r) => r.textValue === match![0]
@@ -892,31 +921,77 @@ function findConnectedComponents(
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/**
+ * Field types that hold no user-entered text. A checkbox's "value" is a
+ * control token and its label is often a paragraph of consent prose —
+ * scanning either produced categories like "this consent sentence is an
+ * Aadhaar number".
+ */
+const NON_DATA_INPUT_TYPES = new Set([
+  "checkbox", "radio", "submit", "button", "reset", "image", "file", "range", "color",
+]);
+
+/**
+ * Beyond this, a "label" is prose, not a field name. Consent text such as
+ * "I authorize UIDAI to update my address based on the documents uploaded"
+ * matched both the address and Aadhaar rules purely by containing those words.
+ */
+const MAX_LABEL_CHARS_FOR_MATCHING = 60;
+
+/**
+ * Rule precedence, most specific first. A field yields ONE category, not
+ * every category whose keyword appears somewhere in its label — that is why
+ * "IFSC Code (for Aadhaar-Bank linking)" was reported as an Aadhaar field,
+ * and why 18 fields produced 22 regions.
+ */
+const RULE_PRECEDENCE: PIICategory[] = [
+  "ifsc", "upi", "pan", "aadhaar", "financial", "bank_account",
+  "date_of_birth", "email", "phone", "medical", "address", "name", "ip_address",
+];
+
 function matchFieldToRules(
   fieldContext: string,
   fieldType: string
 ): PIIRule[] {
+  const type = (fieldType || "").toLowerCase();
+  if (NON_DATA_INPUT_TYPES.has(type)) return [];
+
   const matched: PIIRule[] = [];
 
-  // Special case: input type="password" is always a password field
-  if (fieldType === "password" || fieldType === "text" && /password/i.test(fieldContext)) {
+  // A password input is a password field regardless of anything else.
+  if (type === "password") {
     matched.push(PII_RULES.find((r) => r.category === "password")!);
+    return matched;
   }
 
-  for (const rule of PII_RULES) {
-    if (rule.category === "password" && matched.some((r) => r.category === "password")) {
-      continue; // Already matched
-    }
+  const passwordRule = PII_RULES.find((r) => r.category === "password")!;
+  if (passwordRule.fieldPatterns.some((p) => p.test(fieldContext))) {
+    matched.push(passwordRule);
+  }
 
-    for (const pattern of rule.fieldPatterns) {
-      if (pattern.test(fieldContext)) {
-        matched.push(rule);
-        break;
-      }
+  // First match by precedence wins — one data category per field.
+  for (const category of RULE_PRECEDENCE) {
+    const rule = PII_RULES.find((r) => r.category === category);
+    if (!rule) continue;
+    if (rule.fieldPatterns.some((p) => p.test(fieldContext))) {
+      matched.push(rule);
+      break;
     }
   }
 
   return matched;
+}
+
+/**
+ * Build the string a field's rules are tested against. Long prose labels are
+ * excluded so consent paragraphs cannot trigger keyword matches.
+ */
+export function buildFieldContext(field: {
+  name?: string; id?: string; label?: string; type?: string; pattern?: string;
+}): string {
+  const label = (field.label || "").trim();
+  const usableLabel = label.length <= MAX_LABEL_CHARS_FOR_MATCHING ? label : "";
+  return `${field.name || ""} ${field.id || ""} ${usableLabel} ${field.type || ""} ${field.pattern || ""}`.toLowerCase();
 }
 
 function findElementRect(
@@ -1108,4 +1183,126 @@ export async function detectAllPII(
 
   // Merge and deduplicate
   return mergePIIResults(domPII, visionPII);
+}
+
+// ── Shared Free-Text Scanner (checksum-gated) ────────────────
+// Single source of truth for "is there PII in this arbitrary string?".
+// Used by the egress guard (blocks our own outbound LLM calls), the
+// MAIN-world page monitor, and label sanitization in the pipeline.
+//
+// Every numeric category is checksum-gated. A bare regex over an
+// outbound request body would flag every 10-digit order id and every
+// login email on the web; the validators are what make blocking safe.
+
+export interface PIITextMatch {
+  category: PIICategory;
+  matchedText: string;
+  /** Character offset of the match in the scanned string. */
+  index: number;
+  /** True when a checksum/structural validator confirmed the match. */
+  validated: boolean;
+  confidence: number;
+}
+
+interface TextScanRule {
+  category: PIICategory;
+  pattern: RegExp;
+  /** Runs on capture group 1 (or the whole match). Absent = regex-only. */
+  validate?: (candidate: string) => boolean;
+  confidence: number;
+  /** Higher wins when two rules match overlapping spans. */
+  priority: number;
+}
+
+const TEXT_SCAN_RULES: TextScanRule[] = [
+  // Card before Aadhaar: a 16-digit span must not be reported as a 12-digit one.
+  { category: "financial", pattern: /\b(\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4})\b/g,
+    validate: (c) => verifyLuhn(c.replace(/[\s-]/g, "")), confidence: 0.99, priority: 100 },
+  { category: "aadhaar", pattern: /\b(\d{4}[\s-]?\d{4}[\s-]?\d{4})\b/g,
+    validate: (c) => verifyAadhaarChecksum(c.replace(/[\s-]/g, "")), confidence: 0.98, priority: 90 },
+  { category: "pan", pattern: /\b([A-Z]{5}\d{4}[A-Z])\b/g,
+    validate: verifyPANFormat, confidence: 0.97, priority: 80 },
+  { category: "ifsc", pattern: /\b([A-Z]{4}0[A-Z0-9]{6})\b/g,
+    validate: verifyIFSCFormat, confidence: 0.95, priority: 75 },
+  // UPI before email: "user@paytm" is a VPA, not a mail host.
+  { category: "upi", pattern: /\b([A-Za-z0-9._%+-]+@[A-Za-z0-9]+)\b/g,
+    validate: verifyUPIFormat, confidence: 0.92, priority: 70 },
+  { category: "phone", pattern: /\b(\+?91[\s-]?)?([6-9]\d{9})\b/g,
+    validate: verifyIndianPhone, confidence: 0.9, priority: 60 },
+  // Email has no checksum. Regex-only, so it is reported unvalidated and
+  // callers decide whether that is grounds to block.
+  { category: "email", pattern: /\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g,
+    confidence: 0.85, priority: 50 },
+];
+
+export interface ScanTextOptions {
+  /** Include regex-only (unvalidated) categories such as email. Default false. */
+  includeUnvalidated?: boolean;
+}
+
+/**
+ * Scan arbitrary text for PII. Returns validated matches only unless
+ * `includeUnvalidated` is set. Overlapping spans collapse to the
+ * highest-priority rule, so a card number is never double-reported.
+ */
+export function scanTextForPII(
+  text: string,
+  options: ScanTextOptions = {}
+): PIITextMatch[] {
+  if (!text) return [];
+
+  const candidates: Array<PIITextMatch & { end: number; priority: number }> = [];
+
+  for (const rule of TEXT_SCAN_RULES) {
+    const validated = !!rule.validate;
+    if (!validated && !options.includeUnvalidated) continue;
+
+    rule.pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = rule.pattern.exec(text)) !== null) {
+      // Zero-length match guard — a malformed pattern would spin forever.
+      if (match[0].length === 0) { rule.pattern.lastIndex++; continue; }
+
+      const captured = match[2] ?? match[1] ?? match[0];
+      if (rule.validate && !rule.validate(captured)) continue;
+
+      candidates.push({
+        category: rule.category,
+        matchedText: match[0],
+        index: match.index,
+        end: match.index + match[0].length,
+        validated,
+        confidence: rule.confidence,
+        priority: rule.priority,
+      });
+    }
+  }
+
+  // Collapse overlapping spans, highest priority first.
+  candidates.sort((a, b) => b.priority - a.priority || a.index - b.index);
+  const kept: Array<PIITextMatch & { end: number }> = [];
+  for (const c of candidates) {
+    const overlaps = kept.some((k) => c.index < k.end && k.index < c.end);
+    if (!overlaps) kept.push(c);
+  }
+
+  return kept
+    .sort((a, b) => a.index - b.index)
+    .map(({ category, matchedText, index, validated, confidence }) => ({
+      category, matchedText, index, validated, confidence,
+    }));
+}
+
+/** Replace every PII match in `text` with a category-tagged mask. */
+export function maskPIIInText(text: string, options: ScanTextOptions = {}): string {
+  const matches = scanTextForPII(text, options);
+  if (matches.length === 0) return text;
+
+  let out = "";
+  let cursor = 0;
+  for (const m of matches) {
+    out += text.slice(cursor, m.index) + `[REDACTED:${m.category}]`;
+    cursor = m.index + m.matchedText.length;
+  }
+  return out + text.slice(cursor);
 }

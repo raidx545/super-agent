@@ -12,6 +12,7 @@
 // it, then fall back to WASM, so the reported backend never lies.
 // ============================================================
 
+import { pinOrtEnv, diagnoseWasm } from "../runtime/ort-env";
 import * as ort from "onnxruntime-web/webgpu";
 
 export type OcrBackend = "webgpu" | "wasm";
@@ -23,24 +24,10 @@ export interface OcrSession {
   backend: OcrBackend;
 }
 
-let envConfigured = false;
-
-/** Configure ort.env once. WASM binaries are served from the vendored
- *  `public/ort/` copy (see scripts/copy-ort-wasm.mjs). Threading requires
- *  cross-origin isolation, which extension offscreen docs lack — so we run
- *  single-threaded there and let SIMD carry the CPU path. */
+/** Env setup lives in core/runtime/ort-env so it can run before
+ *  transformers.js claims wasmPaths. This just guarantees it has happened. */
 function configureEnv(): void {
-  if (envConfigured) return;
-  envConfigured = true;
-
-  ort.env.wasm.wasmPaths = chrome.runtime.getURL("ort/");
-
-  const coi = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated === true;
-  const cores =
-    (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 1;
-  ort.env.wasm.numThreads = coi ? Math.max(1, Math.min(cores, 4)) : 1;
-  ort.env.wasm.simd = true;
-  ort.env.logLevel = "error";
+  pinOrtEnv();
 }
 
 // One session per model key for the offscreen lifetime (tier is fixed).
@@ -48,28 +35,71 @@ const cache = new Map<string, Promise<OcrSession>>();
 
 async function build(bytes: ArrayBuffer, webgpu: boolean): Promise<OcrSession> {
   configureEnv();
-  const attempts: OcrBackend[] = webgpu ? ["webgpu", "wasm"] : ["wasm"];
-  let lastErr: unknown;
+  // The final entry is "default": create the session WITHOUT naming an
+  // execution provider. We import `onnxruntime-web/webgpu`, but the bundler
+  // collapses that with the plain `onnxruntime-web` that transformers.js
+  // depends on — and in the plain build "webgpu" is not a registered
+  // provider, so naming it yields "no available backend found". Letting ORT
+  // choose works whichever build won the dedup.
+  const attempts: Array<OcrBackend | "default"> =
+    webgpu ? ["webgpu", "wasm", "default"] : ["wasm", "default"];
+
+  // Keep EVERY attempt's error, in order. ORT's wasm loader caches its first
+  // initWasm() rejection, so a later attempt only ever reports "previous call
+  // to 'initWasm()' failed". Overwriting with the last error therefore throws
+  // away the only message that says what actually went wrong — which is
+  // always the FIRST one.
+  const failures: Array<{ ep: OcrBackend | "default"; message: string }> = [];
 
   for (const ep of attempts) {
     try {
-      const session = await ort.InferenceSession.create(bytes, {
-        executionProviders: [ep],
-        graphOptimizationLevel: "all",
-      });
+      const session = await ort.InferenceSession.create(
+        bytes,
+        ep === "default"
+          ? { graphOptimizationLevel: "all" }
+          : { executionProviders: [ep], graphOptimizationLevel: "all" }
+      );
+      if (failures.length > 0) {
+        console.warn(
+          `[VLESS] OCR fell back to ${ep}. Earlier attempts: ` +
+            failures.map((f) => `${f.ep}: ${f.message}`).join(" | ")
+        );
+      }
       return {
         session,
         inputName: session.inputNames[0],
         outputName: session.outputNames[0],
-        backend: ep,
+        // "default" resolved to whatever ORT picked; report wasm, which is
+        // what the default is on every build we ship.
+        backend: ep === "default" ? "wasm" : ep,
       };
     } catch (e) {
-      lastErr = e;
-      // Fall through to the next execution provider.
+      const message = String((e as Error)?.message ?? e);
+      failures.push({ ep, message });
+      // Log immediately: if a later attempt poisons the message, this is the
+      // only place the original survives.
+      console.error(`[VLESS] OCR ${ep} EP failed:`, e);
     }
   }
+
+  // The root cause is the first failure; the rest are usually its echo.
+  const root = failures[0];
+  const echoes = failures
+    .slice(1)
+    .map((f) => `${f.ep}: ${f.message}`)
+    .join("; ");
+
+  let diagnosis = "";
+  try {
+    diagnosis = ` — ${await diagnoseWasm()}`;
+  } catch {
+    /* diagnosis is best-effort */
+  }
+
   throw new Error(
-    `OCR session create failed: ${String((lastErr as Error)?.message ?? lastErr)}`,
+    `OCR session create failed. Root cause [${root?.ep}]: ${root?.message ?? "unknown"}` +
+      (echoes ? ` (then ${echoes})` : "") +
+      diagnosis
   );
 }
 

@@ -1,217 +1,131 @@
 // ============================================================
-// VLESS — PII Tripwire
-// Intercepts outbound fetch/XHR in the content script.
-// Inspects every outgoing request for detected PII patterns.
-// BLOCKS requests containing PII — provable in DevTools.
+// VLESS — PII Tripwire (MAIN-world page monitor)
 //
-// This is the killer demo feature: judges open DevTools Network
-// tab, run the agent, and see ZERO PII in any outbound request.
+// Observes the page's own outbound fetch/XHR traffic and reports
+// which requests carried PII. Runs in the MAIN world, because a
+// content script's isolated world has its own `fetch` and
+// `XMLHttpRequest` — patching those there sees nothing the page does.
+//
+// OBSERVE-ONLY, deliberately. Blocking the page's requests would break
+// every login, checkout, and search box on the web: a site legitimately
+// POSTs the user's own email and phone number to its own server. VLESS
+// blocks the traffic it is responsible for — its own LLM calls — in
+// `egress-guard.ts`. Here it only reports.
+//
+// Observations are posted to the isolated content script, which relays
+// them to the background for the Privacy Ledger.
 // ============================================================
 
-import type { PIICategory } from "../privacy/pii-detector";
+import { scanTextForPII, type PIICategory } from "./pii-detector";
+import { extractBodyString, sanitizeUrl } from "./egress-guard";
 
-// ── Types ────────────────────────────────────────────────────
+// ── Wire format (MAIN world → isolated content script) ───────
 
-export interface TripwireEvent {
-  id: string;
-  timestamp: number;
+export const TRIPWIRE_MESSAGE = "VLESS_TRIPWIRE_OBSERVATION";
+
+export interface TripwireObservation {
   url: string;
   method: string;
-  blocked: boolean;
-  detectedPatterns: Array<{
-    category: PIICategory;
-    matchedText: string;
-    position: number;
-  }>;
-  bytesBlocked: number;
+  bytes: number;
+  matches: Array<{ category: PIICategory; matchedText: string; position: number }>;
 }
 
-export interface TripwireStats {
-  totalRequests: number;
-  blockedRequests: number;
-  cleanRequests: number;
-  totalBytesInspected: number;
-  totalBytesBlocked: number;
-  events: TripwireEvent[];
+export interface TripwireMessage {
+  source: typeof TRIPWIRE_MESSAGE;
+  observations: TripwireObservation[];
 }
-
-// ── PII Patterns for outbound inspection ─────────────────────
-// These are lightweight regex patterns to scan outbound request bodies.
-// They catch PII that might slip through before sanitization.
-
-const OUTBOUND_PII_PATTERNS: Array<{
-  category: PIICategory;
-  pattern: RegExp;
-  description: string;
-}> = [
-  // Aadhaar: 12 digits (with optional spaces/dashes)
-  { category: "aadhaar", pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, description: "Aadhaar number" },
-  // PAN: ABCDE1234F format
-  { category: "pan", pattern: /\b[A-Z]{5}\d{4}[A-Z]\b/g, description: "PAN card" },
-  // Credit/Debit card: 16 digits
-  { category: "financial", pattern: /\b\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}\b/g, description: "Card number" },
-  // IFSC
-  { category: "ifsc", pattern: /\b[A-Z]{4}0[A-Z0-9]{6}\b/g, description: "IFSC code" },
-  // UPI ID
-  { category: "upi", pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z]{2,}\b/g, description: "UPI ID" },
-  // Email
-  { category: "email", pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, description: "Email" },
-  // Indian phone: 10 digits starting with 6-9
-  { category: "phone", pattern: /\b[6-9]\d{9}\b/g, description: "Phone number" },
-  // Passport: A + 7-8 digits
-  { category: "name", pattern: /\b[A-Z]\d{7,8}\b/g, description: "Passport number" },
-];
 
 // ── State ────────────────────────────────────────────────────
 
 let active = false;
-let stats: TripwireStats = {
-  totalRequests: 0,
-  blockedRequests: 0,
-  cleanRequests: 0,
-  totalBytesInspected: 0,
-  totalBytesBlocked: 0,
-  events: [],
-};
-
 let originalFetch: typeof fetch | null = null;
 let originalXHROpen: typeof XMLHttpRequest.prototype.open | null = null;
 let originalXHRSend: typeof XMLHttpRequest.prototype.send | null = null;
 
+/** Observations are batched so a chatty page cannot flood postMessage. */
+let pending: TripwireObservation[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+const FLUSH_INTERVAL_MS = 500;
+const MAX_PENDING = 50;
+/** Bodies larger than this are not scanned — a multi-MB upload would jank the page. */
+const MAX_SCAN_BYTES = 256 * 1024;
+
 // ── Activation ───────────────────────────────────────────────
 
 /**
- * Activate the PII tripwire.
- * Monkey-patches fetch() and XMLHttpRequest to inspect all outbound requests.
- * Call this once when the content script loads.
+ * Activate the page monitor. Must be called from a MAIN-world script.
+ * Never throws into page code and never delays a request: the body is
+ * scanned after the original call has already been dispatched.
  */
 export function activateTripwire(): void {
   if (active) return;
+  if (typeof window === "undefined") return;
   active = true;
 
-  // ── Patch fetch() ──
-  originalFetch = window.fetch;
-  window.fetch = async function patchedFetch(
+  originalFetch = window.fetch.bind(window);
+
+  window.fetch = function patchedFetch(
     input: RequestInfo | URL,
     init?: RequestInit
   ): Promise<Response> {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const method = init?.method || "GET";
+    // Dispatch first. Observation must never sit in front of the request.
+    const response = originalFetch!(input, init);
 
-    stats.totalRequests++;
-
-    // Only inspect requests with bodies (POST, PUT, PATCH)
-    if (init?.body && (method === "POST" || method === "PUT" || method === "PATCH")) {
-      const bodyStr = await extractBodyString(init.body);
-      const bodyBytes = new TextEncoder().encode(bodyStr).length;
-      stats.totalBytesInspected += bodyBytes;
-
-      const detection = scanForPII(bodyStr);
-
-      if (detection.length > 0) {
-        // BLOCK the request
-        stats.blockedRequests++;
-        stats.totalBytesBlocked += bodyBytes;
-
-        const event: TripwireEvent = {
-          id: `tw-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          timestamp: Date.now(),
-          url: sanitizeUrl(url),
-          method,
-          blocked: true,
-          detectedPatterns: detection,
-          bytesBlocked: bodyBytes,
-        };
-        stats.events.push(event);
-        if (stats.events.length > 100) stats.events = stats.events.slice(-100);
-
-        console.warn(`[VLESS Tripwire] BLOCKED ${method} ${sanitizeUrl(url)} — PII detected:`, detection.map((d) => d.category));
-
-        // Return a safe error response instead of sending PII
-        return new Response(
-          JSON.stringify({ error: "Request blocked by VLESS privacy tripwire — PII detected in outbound payload" }),
-          { status: 403, statusText: "Blocked by VLESS Privacy Tripwire", headers: { "Content-Type": "application/json" } }
-        );
+    try {
+      const method = (init?.method || "GET").toUpperCase();
+      if (init?.body && method !== "GET" && method !== "HEAD") {
+        void observe(urlOf(input), method, init.body);
       }
-
-      stats.cleanRequests++;
-    } else {
-      stats.cleanRequests++;
+    } catch {
+      // Monitoring is best-effort and must never surface to the page.
     }
 
-    return originalFetch!.call(window, input, init);
+    return response;
   };
 
-  // ── Patch XMLHttpRequest ──
   originalXHROpen = XMLHttpRequest.prototype.open;
   originalXHRSend = XMLHttpRequest.prototype.send;
 
   XMLHttpRequest.prototype.open = function patchedOpen(
+    this: XMLHttpRequest,
     method: string,
     url: string | URL,
     async?: boolean,
     username?: string | null,
-    password?: string | null,
+    password?: string | null
   ) {
-    (this as any)._vless_method = method;
-    (this as any)._vless_url = typeof url === "string" ? url : url.href;
+    try {
+      (this as any)._vlessMethod = method;
+      (this as any)._vlessUrl = typeof url === "string" ? url : url.href;
+    } catch {
+      // Ignore — some pages freeze XHR instances.
+    }
     return originalXHROpen!.call(this, method, url, async ?? true, username, password);
   };
 
-  XMLHttpRequest.prototype.send = function patchedSend(body?: Document | XMLHttpRequestBodyInit | null) {
-    const method = (this as any)._vless_method || "GET";
-    const url = (this as any)._vless_url || "";
+  XMLHttpRequest.prototype.send = function patchedSend(
+    this: XMLHttpRequest,
+    body?: Document | XMLHttpRequestBodyInit | null
+  ) {
+    // Send first, observe after — identical reasoning to fetch above.
+    const result = originalXHRSend!.call(this, body);
 
-    stats.totalRequests++;
-
-    if (body && (method === "POST" || method === "PUT" || method === "PATCH")) {
-      const bodyStr = typeof body === "string" ? body : "";
-      if (bodyStr) {
-        const bodyBytes = new TextEncoder().encode(bodyStr).length;
-        stats.totalBytesInspected += bodyBytes;
-
-        const detection = scanForPII(bodyStr);
-
-        if (detection.length > 0) {
-          stats.blockedRequests++;
-          stats.totalBytesBlocked += bodyBytes;
-
-          const event: TripwireEvent = {
-            id: `tw-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            timestamp: Date.now(),
-            url: sanitizeUrl(url),
-            method,
-            blocked: true,
-            detectedPatterns: detection,
-            bytesBlocked: bodyBytes,
-          };
-          stats.events.push(event);
-          if (stats.events.length > 100) stats.events = stats.events.slice(-100);
-
-          console.warn(`[VLESS Tripwire] BLOCKED XHR ${method} ${sanitizeUrl(url)}`);
-
-          // Don't send — abort
-          this.abort();
-          return;
-        }
-
-        stats.cleanRequests++;
-      } else {
-        stats.cleanRequests++;
+    try {
+      const method = ((this as any)._vlessMethod || "GET").toUpperCase();
+      const url = (this as any)._vlessUrl || "";
+      if (body && method !== "GET" && method !== "HEAD") {
+        void observe(url, method, body as BodyInit);
       }
-    } else {
-      stats.cleanRequests++;
+    } catch {
+      // Best-effort.
     }
 
-    return originalXHRSend!.call(this, body);
+    return result;
   };
 
-  console.log("[VLESS Tripwire] Active — monitoring all outbound requests for PII");
+  console.log("[VLESS Tripwire] Page monitor active (observe-only)");
 }
 
-/**
- * Deactivate the tripwire and restore original fetch/XHR.
- */
 export function deactivateTripwire(): void {
   if (!active) return;
   active = false;
@@ -220,101 +134,80 @@ export function deactivateTripwire(): void {
   if (originalXHROpen) XMLHttpRequest.prototype.open = originalXHROpen;
   if (originalXHRSend) XMLHttpRequest.prototype.send = originalXHRSend;
 
-  console.log("[VLESS Tripwire] Deactivated");
-}
-
-// ── Scanning ─────────────────────────────────────────────────
-
-function scanForPII(
-  text: string
-): Array<{ category: PIICategory; matchedText: string; position: number }> {
-  const detections: Array<{ category: PIICategory; matchedText: string; position: number }> = [];
-
-  for (const { category, pattern } of OUTBOUND_PII_PATTERNS) {
-    // Reset regex lastIndex
-    pattern.lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      detections.push({
-        category,
-        matchedText: match[0],
-        position: match.index,
-      });
-    }
-  }
-
-  return detections;
-}
-
-// ── Body Extraction ──────────────────────────────────────────
-
-async function extractBodyString(body: BodyInit): Promise<string> {
-  if (typeof body === "string") return body;
-  if (body instanceof URLSearchParams) return body.toString();
-  if (body instanceof Blob) {
-    try {
-      return await body.text();
-    } catch {
-      return "";
-    }
-  }
-  if (body instanceof ArrayBuffer) {
-    return new TextDecoder().decode(body);
-  }
-  if (body instanceof ReadableStream) {
-    try {
-      const reader = body.getReader();
-      const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const total = chunks.reduce((sum, c) => sum + c.length, 0);
-      const result = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return new TextDecoder().decode(result);
-    } catch {
-      return "";
-    }
-  }
-  // FormData or other — can't easily inspect
-  return "";
-}
-
-// ── URL Sanitization ─────────────────────────────────────────
-
-function sanitizeUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    // Remove query params and hash (they may contain PII)
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url.split("?")[0].split("#")[0];
-  }
-}
-
-// ── Public API ───────────────────────────────────────────────
-
-export function getTripwireStats(): TripwireStats {
-  return { ...stats };
+  flush();
+  console.log("[VLESS Tripwire] Page monitor deactivated");
 }
 
 export function isTripwireActive(): boolean {
   return active;
 }
 
-export function resetTripwireStats(): void {
-  stats = {
-    totalRequests: 0,
-    blockedRequests: 0,
-    cleanRequests: 0,
-    totalBytesInspected: 0,
-    totalBytesBlocked: 0,
-    events: [],
+// ── Observation ──────────────────────────────────────────────
+
+async function observe(url: string, method: string, body: BodyInit | Document): Promise<void> {
+  if (typeof (body as Document)?.nodeType === "number") return; // Document bodies: skip.
+
+  let bodyStr = "";
+  try {
+    bodyStr = await extractBodyString(body as BodyInit);
+  } catch {
+    return;
+  }
+  if (!bodyStr) return;
+
+  const bytes = new TextEncoder().encode(bodyStr).length;
+  if (bytes > MAX_SCAN_BYTES) return;
+
+  // Checksum-gated only. Reporting every 10-digit order id as a phone
+  // number would make the ledger meaningless.
+  const matches = scanTextForPII(bodyStr);
+
+  pending.push({
+    url: sanitizeUrl(url),
+    method,
+    bytes,
+    matches: matches.map((m) => ({
+      category: m.category,
+      matchedText: maskSample(m.matchedText),
+      position: m.index,
+    })),
+  });
+
+  if (pending.length >= MAX_PENDING) {
+    flush();
+  } else if (!flushTimer) {
+    flushTimer = setTimeout(flush, FLUSH_INTERVAL_MS);
+  }
+}
+
+function flush(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (pending.length === 0) return;
+
+  const message: TripwireMessage = {
+    source: TRIPWIRE_MESSAGE,
+    observations: pending,
   };
+  pending = [];
+
+  try {
+    window.postMessage(message, window.location.origin);
+  } catch {
+    // Page monitoring is best-effort.
+  }
+}
+
+/** The ledger renders these — never let a real value through. */
+function maskSample(value: string): string {
+  if (value.length <= 4) return "*".repeat(value.length);
+  return `${value.slice(0, 2)}${"*".repeat(value.length - 4)}${value.slice(-2)}`;
+}
+
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return (input as Request).url;
 }

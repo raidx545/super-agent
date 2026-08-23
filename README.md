@@ -34,7 +34,7 @@ VLESS eliminates this privacy risk by running visual perception models directly 
 
 - **Tri-signal Perception** -- DOM extraction for standard pages (10ms), PP-OCR for visible text (200ms), Florence-2 ViT for visual grounding (1-3s). All three signals are fused into a unified ScreenGraph with IoU-based deduplication.
 - **Checksum-gated PII Detection** -- Aadhaar validated via Verhoeff algorithm, PAN through format and series checks, credit cards via Luhn algorithm, IFSC through structural validation. Eliminates false positives that plague regex-only approaches.
-- **Provable Privacy** -- A PII tripwire hooks fetch/XHR and blocks outbound requests containing detected PII. Re-OCR verification proves PII is gone from redacted pixels before anything leaves the device. All of this is DevTools-verifiable.
+- **Provable Privacy** -- An egress guard scans every request VLESS itself sends to an LLM and refuses to transmit one carrying checksum-validated PII. A MAIN-world tripwire separately reports what the page's own traffic carries. Re-OCR verification proves PII is gone from redacted pixels before anything leaves the device. All of this is DevTools-verifiable.
 - **Deterministic Planning** -- For form-filling tasks, a local planner maps field labels to user data without any LLM, achieving sub-100ms planning. LLM planning is available as a fallback for complex tasks.
 - **Full Explainability** -- An Agent Reasoning Trace logs every decision with what the agent observed, what it considered, what it decided, and whether verification passed.
 
@@ -207,7 +207,7 @@ flowchart TB
         PII_DATA["PII Values"]
         FACE_DATA["Face Data"]
         SANITIZE["Sanitizer"]
-        TRIPWIRE["PII Tripwire"]
+        TRIPWIRE["Egress Guard"]
     end
 
     subgraph Safe["Safe to Transmit"]
@@ -216,7 +216,7 @@ flowchart TB
         META["Redaction proof metadata"]
     end
 
-    subgraph Blocked["Blocked by Tripwire"]
+    subgraph Blocked["Blocked by Egress Guard"]
         BLOCK_SSI["Screenshots"]
         BLOCK_PII["PII values"]
         BLOCK_FACE["Face data"]
@@ -261,15 +261,17 @@ flowchart TB
 - Redaction proof metadata (what was detected, how it was redacted)
 - Sanitized ScreenGraph (no PII values, only structural information)
 
-### Provable Privacy (Four Mechanisms)
+### Provable Privacy (Five Mechanisms)
 
-1. **PII Tripwire** -- Monkey-patches `fetch()` and `XMLHttpRequest` in the content script. Every outbound POST/PUT/PATCH request body is scanned for PII patterns (Aadhaar, PAN, card numbers, phone, email, IFSC). If any pattern matches, the request is blocked (returns 403). This is visible in Chrome DevTools Network tab.
+1. **Egress Guard** -- Every outbound call VLESS makes to an LLM provider goes through `guardedFetch`, which serializes the request body and scans it with the checksum-gated detectors (Verhoeff for Aadhaar, Luhn for cards, format+series for PAN and IFSC, subscriber-range for phone). A match aborts the request before it reaches the network, so no DevTools entry is produced at all. Blocking is confined to traffic VLESS originates — that is traffic it is responsible for, and a false positive there degrades planning rather than breaking a website.
 
-2. **Re-OCR Verification** -- After redacting the screenshot in the offscreen document, the redacted image is re-OCRed. The OCR output is scanned for residual PII patterns. If any remain, verification fails. This proves that the redaction actually removed PII from the pixels.
+2. **PII Tripwire (page monitor)** -- A separate MAIN-world content script patches the page's own `fetch`/`XMLHttpRequest` to report which site requests carried PII. It must run in the MAIN world: a content script's isolated world has its own `fetch`, so patching it there observes nothing the page does. It is deliberately **observe-only** — sites legitimately POST the user's own phone number and email to their own servers, and blocking that would break every login and checkout on the web. Observations feed the Privacy Ledger; values are masked before they are recorded.
 
-3. **Privacy Proof Ledger** -- A live dashboard in the side panel displays: outbound requests monitored, PII-containing requests blocked, bytes inspected vs. blocked, re-OCR verification status, and an overall privacy score. Updates in real-time during pipeline execution.
+3. **Re-OCR Verification** -- After redacting the screenshot in the offscreen document, the redacted image is re-OCRed. The OCR output is scanned for residual PII patterns. If any remain, verification fails. This proves that the redaction actually removed PII from the pixels.
 
-4. **DevTools Verification** -- Open Chrome DevTools, navigate to the Network tab, run the agent, and verify that zero PII appears in any outbound request. The only data that leaves the device is sanitized structural metadata.
+4. **Privacy Proof Ledger** -- A live dashboard in the side panel displays: outbound requests monitored, PII-containing requests blocked, bytes inspected vs. blocked, re-OCR verification status, and an overall privacy score. Updates in real-time during pipeline execution.
+
+5. **DevTools Verification** -- Open Chrome DevTools, navigate to the Network tab, run the agent, and verify that zero PII appears in any outbound request. The only data that leaves the device is sanitized structural metadata.
 
 ---
 
@@ -299,7 +301,7 @@ flowchart TB
 | Redaction | OffscreenCanvas | Blur, black-box, pixelate in offscreen context |
 | LLM planning | Ollama / Claude / OpenAI / OpenRouter | Multi-provider with automatic fallback |
 | Deterministic planner | Custom engine | 30+ Indian form field patterns, sub-100ms offline planning |
-| Memory | IndexedDB + Web Crypto API | AES-256-GCM encrypted at rest |
+| Memory & API keys | IndexedDB + Web Crypto API | AES-256-GCM encrypted at rest, device-local key |
 | Type safety | TypeScript 5.7 | End-to-end type checking |
 | Build | Vite + WXT | Fast bundling with code splitting |
 | Testing | Vitest | Unit and integration tests |
@@ -337,7 +339,8 @@ src/
       pii-detector.ts            Checksum-gated PII detection (Aadhaar/PAN/cards/IFSC)
       redaction-engine.ts        CSS injection for DOM PII fields
       redaction-verify.ts        Re-OCR verification of redacted frames
-      tripwire.ts                PII tripwire (hooks fetch/XHR, blocks outbound PII)
+      egress-guard.ts            Blocks VLESS's own outbound requests carrying PII
+      tripwire.ts                MAIN-world page monitor (observe-only)
       visual-overlay.ts          DOM overlay showing PII bounding boxes
     runtime/
       backend.ts                 Hardware tier detection (WebGPU/WASM/CPU)
@@ -347,7 +350,8 @@ src/
       model-registry.ts          Model metadata (Florence-2, PP-OCR, GLiNER, WebLLM)
   entrypoints/
     background/index.ts          Service Worker: task orchestration and message routing
-    content/index.ts             Content Script: DOM, actions, tripwire, overlay
+    content/index.ts             Content Script: DOM, actions, overlay, tripwire relay
+    tripwire.content.ts          MAIN-world tripwire injector
     offscreen/main.ts            Offscreen ML Host: Florence-2, PP-OCR, redaction
     sidepanel/                   React side panel UI
   types/
@@ -451,9 +455,9 @@ The Aadhaar form contains: Aadhaar number, PAN number, face photo placeholder, p
 - Face detection works via Chrome FaceDetector API
 - Canvas redaction blurs faces, black-boxes passwords and IDs
 - Re-OCR verification confirms zero PII in redacted frames
-- PII tripwire blocks outbound requests containing detected PII
+- Egress guard blocks VLESS's own outbound requests when they contain validated PII
 - Deterministic planner fills forms locally without LLM
-- Privacy Proof Ledger shows live tripwire stats and verification status
+- Privacy Proof Ledger shows live egress-guard and page-monitor stats plus verification status
 - Agent Reasoning Trace logs every decision with confidence scores
 - TypeScript compiles without errors (`pnpm typecheck`)
 
@@ -469,7 +473,7 @@ The Aadhaar form contains: Aadhaar number, PAN number, face photo placeholder, p
 | PII redaction | No | No | No | Yes (checksum-gated, re-OCR verified) |
 | Visual perception | Screenshots only | Screenshots only | Screenshots only | Tri-signal (DOM + OCR + ViT) |
 | Redaction verification | No | No | No | Yes (re-OCR proves PII gone) |
-| PII tripwire | No | No | No | Yes (blocks outbound PII) |
+| PII egress guard | No | No | No | Yes (blocks own outbound PII) |
 | Distribution | Python library | API | Web app | Chrome extension (1-click install) |
 | Cost | API fees per task | API fees per task | Subscription | Free (local inference) |
 | Open source | Yes | No | No | Yes |

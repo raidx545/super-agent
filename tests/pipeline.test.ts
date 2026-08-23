@@ -182,7 +182,10 @@ describe("Deterministic Replay", () => {
   it("builds correct selectors from actions", () => {
     const actions = [
       { target: "given_name", expected: "#given_name" },
-      { target: "my-form-input", expected: "[name=\"my-form-input\"]" },
+      // A bare identifier (hyphens included) is a valid id, so the rule
+      // below yields an id selector. The previous expectation contradicted
+      // the rule it was testing.
+      { target: "my-form-input", expected: "#my-form-input" },
       { target: "submit button", expected: "[name=\"submit button\"]" },
       { target: "#special-id", expected: "#special-id" },
       { target: ".my-class", expected: ".my-class" },

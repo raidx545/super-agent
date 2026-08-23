@@ -123,7 +123,28 @@ export async function warmModels(ids: ModelId[]): Promise<ModelStatus[]> {
         return;
       }
 
-      // transformersjs / webllm / mediapipe — initialized in later phases.
+      // transformers.js models (Florence-2) manage their own fetch + cache.
+      // Previously this branch marked them "skipped", so the Models tab
+      // downloaded nothing and the weights were pulled lazily mid-pipeline.
+      if (e.kind === "transformersjs" && id === "florence2") {
+        try {
+          publish(id, { state: "downloading", progress: 0 });
+          const { warmFlorence } = await import("../perception/florence2-engine");
+          await warmFlorence((fraction) =>
+            publish(id, { state: "downloading", progress: fraction })
+          );
+          update(id, { state: "ready", progress: 1 });
+        } catch (err) {
+          publish(id, {
+            state: "error",
+            progress: 0,
+            error: String((err as Error)?.message ?? err),
+          });
+        }
+        return;
+      }
+
+      // webllm / mediapipe — initialized in later phases.
       publish(id, { state: "skipped", progress: 0 });
     }),
   );

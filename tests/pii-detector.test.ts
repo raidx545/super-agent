@@ -90,13 +90,16 @@ describe("PII Detector — DOM-based", () => {
   it("detects PAN card numbers", () => {
     const elements: any[] = [];
     const forms: any[] = [];
-    const pageText = "PAN: ABCDE1234F is required for tax filing";
+    // 4th character must be a valid holder type (P = individual).
+    // The old fixture "ABCDE1234F" has "D" there, which is not a real PAN
+    // and is correctly rejected by the format validator.
+    const pageText = "PAN: ABCPE1234F is required for tax filing";
 
     const result = detectPIIFromDOM(elements, forms, pageText);
 
     const pan = result.find((r) => r.category === "pan");
     expect(pan).toBeDefined();
-    expect(pan!.textValue).toBe("ABCDE1234F");
+    expect(pan!.textValue).toBe("ABCPE1234F");
   });
 
   it("detects name fields", () => {
@@ -283,5 +286,63 @@ describe("PII Detector — Edge Cases", () => {
 
     const result = mergePIIResults(domRegions, [], 0.5);
     expect(result.regions.length).toBe(0);
+  });
+});
+
+describe("PII Detector — false positives from real UIDAI form", () => {
+  const field = (label: string, name: string, type = "text") => ({
+    name, id: name, type, label, value: "", required: false,
+    maxLength: 0, pattern: "", options: [], rect: {}, filledByUser: false,
+  });
+  const form = (fields: any[]) => [{ id: "f", action: "", method: "post", fields }];
+  const cats = (fields: any[]) =>
+    detectPIIFromDOM([], form(fields) as any, "").map((r) => r.category);
+
+  it("does not call an IFSC field an Aadhaar field", () => {
+    // The label contains "Aadhaar", but the field is an IFSC code.
+    const c = cats([field("IFSC Code (for Aadhaar-Bank linking)", "ifsc")]);
+    expect(c).toContain("ifsc");
+    expect(c).not.toContain("aadhaar");
+  });
+
+  it("does not treat a UIDAI consent checkbox as PII", () => {
+    // "UIDAI" contains "uid"; the sentence contains "address".
+    const c = cats([
+      field(
+        "I authorize UIDAI to update my address based on the documents uploaded. I confirm the information is correct.",
+        "consent",
+        "checkbox"
+      ),
+    ]);
+    expect(c).toHaveLength(0);
+  });
+
+  it("treats PIN Code as an address field, never a password", () => {
+    const c = cats([field("PIN Code", "pincode")]);
+    expect(c).toContain("address");
+    expect(c).not.toContain("password");
+  });
+
+  it("still catches a genuine OTP field as a credential", () => {
+    expect(cats([field("OTP received on registered mobile", "otp")])).toContain("password");
+  });
+
+  it("assigns one category per field, not every keyword match", () => {
+    const regions = detectPIIFromDOM([], form([
+      field("Aadhaar Number", "aadhaar"),
+      field("PAN Number", "pan"),
+      field("Full Name", "name"),
+      field("Mobile Number", "mobile"),
+    ]) as any, "");
+    // Four fields in, at most four field-derived regions out.
+    expect(regions.length).toBeLessThanOrEqual(4);
+    expect(regions.map((r) => r.category).sort()).toEqual(["aadhaar", "name", "pan", "phone"]);
+  });
+
+  it("ignores radio and submit inputs entirely", () => {
+    expect(cats([
+      field("Aadhaar Number", "idType", "radio"),
+      field("Submit Update Request", "submit", "submit"),
+    ])).toHaveLength(0);
   });
 });

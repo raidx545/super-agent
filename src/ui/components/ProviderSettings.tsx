@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
+import {
+  loadProviderConfigs,
+  saveProviderConfigs,
+} from "../../core/agent/llm-providers";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -86,55 +90,22 @@ export function ProviderSettings() {
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
 
-  // Load configs
+  // Load configs.
+  // Goes through the shared loader so keys are decrypted from local
+  // storage with the device key — the component must not read raw
+  // storage, or it would resurrect the plaintext path.
   useEffect(() => {
-    chrome.storage.sync.get("vless_provider_configs", (result) => {
-      const stored = result.vless_provider_configs || {};
-      // Merge with defaults
-      const merged: Record<ProviderID, ProviderConfig> = {
-        ollama: {
-          id: "ollama",
-          name: "Ollama (Local)",
-          enabled: true,
-          baseUrl: "http://localhost:11434",
-          model: "qwen2.5:1.5b",
-          temperature: 0.3,
-          maxTokens: 2048,
-          ...stored.ollama,
-        },
-        claude: {
-          id: "claude",
-          name: "Claude (Anthropic)",
-          enabled: false,
-          baseUrl: "https://api.anthropic.com",
-          model: "claude-3-5-haiku-20241022",
-          temperature: 0.3,
-          maxTokens: 2048,
-          ...stored.claude,
-        },
-        openai: {
-          id: "openai",
-          name: "OpenAI (GPT)",
-          enabled: false,
-          baseUrl: "https://api.openai.com/v1",
-          model: "gpt-4o-mini",
-          temperature: 0.3,
-          maxTokens: 2048,
-          ...stored.openai,
-        },
-        openrouter: {
-          id: "openrouter",
-          name: "OpenRouter",
-          enabled: false,
-          baseUrl: "https://openrouter.ai/api/v1",
-          model: "meta-llama/llama-3.2-1b-instruct",
-          temperature: 0.3,
-          maxTokens: 2048,
-          ...stored.openrouter,
-        },
-      };
-      setConfigs(merged);
-    });
+    let cancelled = false;
+    loadProviderConfigs()
+      .then((loaded) => {
+        if (!cancelled) setConfigs(loaded);
+      })
+      .catch(() => {
+        if (!cancelled) setConfigs(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Check providers
@@ -206,7 +177,8 @@ export function ProviderSettings() {
         [id]: { ...configs[id], ...updates },
       };
       setConfigs(newConfigs);
-      await chrome.storage.sync.set({ vless_provider_configs: newConfigs });
+      // Shared saver: encrypts apiKey with the device key before writing.
+      await saveProviderConfigs(newConfigs);
       // Re-check after saving
       setTimeout(() => checkProviders(), 500);
       setSaving(null);

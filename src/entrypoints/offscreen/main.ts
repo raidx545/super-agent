@@ -4,6 +4,11 @@
 // WASM. Exposes the ML runtime to the service worker over the RPC bus.
 // ============================================================
 
+// FIRST import, deliberately. Pins ORT's wasm path to the packaged runtime
+// before @huggingface/transformers can default it to a jsdelivr CDN URL.
+// Moving this below any ORT consumer re-introduces the initWasm failure.
+import "../../core/runtime/ort-env";
+
 import { serveOffscreen } from "../../core/runtime/messaging";
 import { detectBackend } from "../../core/runtime/backend";
 import { getModelStatuses, warmModels } from "../../core/runtime/model-host";

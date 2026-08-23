@@ -4,6 +4,7 @@
 // Falls back to rule-based planning when Ollama is unavailable
 // ============================================================
 
+import { guardedFetch } from "../privacy/egress-guard";
 import type { PageState, PlannedAction, AgentAction } from "../../types";
 
 // ── Configuration ────────────────────────────────────────────
@@ -262,7 +263,7 @@ async function callOllama(
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
-    const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
+    const response = await guardedFetch(`${OLLAMA_HOST}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

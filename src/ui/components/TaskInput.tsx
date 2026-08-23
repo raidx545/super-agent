@@ -1,10 +1,18 @@
 import { useState } from "react";
+import type React from "react";
 import type { AgentTask } from "../../types";
 
 interface TaskInputProps {
   onStartTask: (description: string, data?: Record<string, string>) => void;
   onCancelTask: () => void;
   task: AgentTask | null;
+  /**
+   * Result panels (progress, extracted data, PII). They render INSIDE this
+   * component because its root is `h-full` with a `flex-1` spacer pinning
+   * the composer to the bottom — a sibling rendered after it in <main>
+   * gets pushed a full viewport down and looks like it never appeared.
+   */
+  children?: React.ReactNode;
 }
 
 const QUICK_TASKS = [
@@ -14,7 +22,7 @@ const QUICK_TASKS = [
   { label: "Find & click", icon: "🔍", prompt: "Find and click the target element" },
 ];
 
-export function TaskInput({ onStartTask, onCancelTask, task }: TaskInputProps) {
+export function TaskInput({ onStartTask, onCancelTask, task, children }: TaskInputProps) {
   const [input, setInput] = useState("");
   const [showDataFields, setShowDataFields] = useState(false);
   const [dataFields, setDataFields] = useState<Record<string, string>>({});
@@ -25,8 +33,12 @@ export function TaskInput({ onStartTask, onCancelTask, task }: TaskInputProps) {
     setInput("");
   };
 
+  // Run immediately. Previously this only populated the textbox, so a
+  // quick action looked like a no-op until the user noticed the input had
+  // changed and pressed Run themselves.
   const handleQuickTask = (prompt: string) => {
-    setInput(prompt);
+    setInput("");
+    onStartTask(prompt, Object.keys(dataFields).length > 0 ? dataFields : undefined);
   };
 
   const isRunning = task?.status === "executing" || task?.status === "analyzing" || task?.status === "planning" || task?.status === "verifying";
@@ -96,6 +108,9 @@ export function TaskInput({ onStartTask, onCancelTask, task }: TaskInputProps) {
           <p className="text-[11px] text-gray-400">{task.error || "Unknown error"}</p>
         </div>
       )}
+
+      {/* Result panels: progress, extracted data, detected PII */}
+      {children}
 
       {/* Quick Tasks */}
       <div className="px-4 mt-4">

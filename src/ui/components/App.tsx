@@ -1,5 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { TaskInput } from "./TaskInput";
+import { ExtractedDataPanel } from "./ExtractedDataPanel";
+import type { ExtractedData } from "../../core/extraction/page-extractor";
+import type { PipelineProgress, PIIReviewField } from "../../core/pipeline/full-pipeline";
+import type { RequiredInput } from "../../core/agent/requirements";
+import type { PIIRegion } from "../../core/privacy/pii-detector";
+import type { SubTask } from "../../core/agent/task-decomposer";
+import { PipelineProgressPanel } from "./PipelineProgressPanel";
+import { PIIResultsPanel } from "./PIIResultsPanel";
+import { PIIReviewPanel } from "./PIIReviewPanel";
+import { NeedsInputPanel } from "./NeedsInputPanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 
 import { LearningLog } from "./LearningLog";
@@ -33,6 +43,13 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
 export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("task");
   const [task, setTask] = useState<AgentTask | null>(null);
+  const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
+  const [piiRegions, setPiiRegions] = useState<PIIRegion[] | null>(null);
+  const [progress, setProgress] = useState<PipelineProgress | null>(null);
+  const [subTasks, setSubTasks] = useState<SubTask[] | null>(null);
+  const [piiReview, setPiiReview] = useState<PIIReviewField[] | null>(null);
+  const [needs, setNeeds] = useState<RequiredInput[] | null>(null);
+  const [lastTask, setLastTask] = useState<{ description: string; data?: Record<string, string> } | null>(null);
   const [reasoningTrace, setReasoningTrace] = useState<ReasoningStep[]>([]);
   const [, _setPageState] = useState<PageState | null>(null);
   const [overlayActive, setOverlayActive] = useState(false);
@@ -92,7 +109,40 @@ export function App() {
         case "TASK_COMPLETE":
           setTask(message.payload.task);
           break;
+        case "PIPELINE_PROGRESS":
+          setProgress(message.payload);
+          break;
         case "PIPELINE_COMPLETE":
+          setProgress(null);
+          if (message.payload?.piiDetection?.regions) {
+            setPiiRegions(message.payload.piiDetection.regions);
+          }
+          if (message.payload?.piiReview?.length) {
+            setPiiReview(message.payload.piiReview);
+          }
+          if (message.payload?.needs?.length) {
+            setNeeds(message.payload.needs);
+          }
+          // An extraction task completes with an empty plan — it never goes
+          // through the planner — so it must be handled before the plan-length
+          // check below, which would otherwise drop the result silently.
+          if (message.payload?.extractedData) {
+            setExtractedData(message.payload.extractedData);
+            const ex = message.payload.extractedData;
+            setTask({
+              id: `extract-${Date.now()}`,
+              description: "Extract data",
+              status: "completed",
+              plan: { steps: [], estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
+              currentStep: 0,
+              totalSteps: 0,
+              startTime: Date.now(),
+              endTime: Date.now(),
+              result: `Extracted ${ex.summary.fieldCount} fields (${ex.summary.maskedFieldCount} masked) on-device`,
+            });
+            break;
+          }
+          setExtractedData(null);
           // Pipeline completed — update task status
           if (message.payload?.plan?.length > 0) {
             setTask({
@@ -171,6 +221,23 @@ export function App() {
   // ── Actions ──────────────────────────────────────────────
 
   const startTask = useCallback(async (description: string, data?: Record<string, string>) => {
+    setExtractedData(null);
+    setPiiRegions(null);
+    setSubTasks(null);
+    setPiiReview(null);
+    setNeeds(null);
+    setLastTask({ description, data });
+    setProgress({ currentPhase: "capture", steps: [], elapsedMs: 0 });
+    setTask({
+      id: `pipeline-${Date.now()}`,
+      description,
+      status: "analyzing",
+      plan: { steps: [], estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
+      currentStep: 0,
+      totalSteps: 0,
+      startTime: Date.now(),
+    });
+
     // Use the full pipeline (PII detection + redaction + planning)
     const response = await chrome.runtime.sendMessage({
       type: "EXECUTE_PIPELINE",
@@ -179,28 +246,58 @@ export function App() {
       timestamp: Date.now(),
     });
 
-    if (response?.plan?.length > 0) {
+    setProgress(null);
+
+    // Surface detected PII for the user regardless of task type.
+    if (response?.piiDetection?.regions) {
+      setPiiRegions(response.piiDetection.regions);
+    }
+
+    if (response?.extractedData) {
+      setExtractedData(response.extractedData);
+    }
+    if (response?.subTasks?.length > 1) {
+      setSubTasks(response.subTasks);
+    }
+    if (response?.piiReview?.length) {
+      setPiiReview(response.piiReview);
+    }
+    if (response?.needs?.length) {
+      setNeeds(response.needs);
+    }
+
+    // An empty plan is a legitimate outcome — extraction tasks never
+    // produce one. Only a genuine pipeline failure should fall back, or we
+    // silently re-run the whole task through the legacy planner (and hit a
+    // cloud provider a second time) every time extraction succeeds.
+    const pipelineFailed = !response || response.error || response.phase === "error";
+
+    if (!pipelineFailed) {
+      const stepCount = response.plan?.length ?? 0;
       setTask({
         id: `pipeline-${Date.now()}`,
         description,
         status: "completed",
-        plan: { steps: response.plan, estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
-        currentStep: response.plan.length,
-        totalSteps: response.plan.length,
+        plan: { steps: response.plan ?? [], estimatedTime: 0, riskLevel: "low", requiresConfirmation: false, dataMappings: [] },
+        currentStep: stepCount,
+        totalSteps: stepCount,
         startTime: Date.now(),
         endTime: Date.now(),
-        result: `${response.piiDetection?.summary?.totalRegions || 0} PII detected, ${response.redactionSummary?.redacted || 0} redacted, ${response.plan.length} steps planned`,
+        result: response.extractedData
+          ? `Extracted ${response.extractedData.summary.fieldCount} fields (${response.extractedData.summary.maskedFieldCount} masked) — on-device, nothing sent`
+          : `${response.piiDetection?.summary?.totalRegions || 0} PII detected, ${response.redactionSummary?.redacted || 0} redacted, ${stepCount} steps planned`,
       });
-    } else {
-      // Fallback to simple task execution
-      const fallbackResponse = await chrome.runtime.sendMessage({
-        type: "START_TASK",
-        payload: { description, data },
-        source: "sidepanel",
-        timestamp: Date.now(),
-      });
-      setTask(fallbackResponse);
+      return;
     }
+
+    // Fallback to simple task execution
+    const fallbackResponse = await chrome.runtime.sendMessage({
+      type: "START_TASK",
+      payload: { description, data },
+      source: "sidepanel",
+      timestamp: Date.now(),
+    });
+    setTask(fallbackResponse);
   }, []);
 
   const cancelTask = useCallback(async () => {
@@ -338,7 +435,42 @@ export function App() {
             onStartTask={startTask}
             onCancelTask={cancelTask}
             task={task}
-          />
+          >
+            {progress && <PipelineProgressPanel progress={progress} />}
+            {!progress && subTasks && (
+              <div className="mx-4 mt-4 p-3 bg-gray-900 rounded-lg border border-gray-800">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">
+                  {subTasks.length} sub-tasks
+                </p>
+                <div className="space-y-1">
+                  {subTasks.map((st, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[11px]">
+                      <span>{st.kind === "extract" ? "📊" : "⚡"}</span>
+                      <span className="text-gray-300 flex-1">{st.description}</span>
+                      <span className="text-[9px] text-gray-600">{st.kind}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!progress && needs && needs.length > 0 && (
+              <NeedsInputPanel
+                needs={needs}
+                onRetry={
+                  lastTask
+                    ? () => void startTask(lastTask.description, lastTask.data)
+                    : undefined
+                }
+              />
+            )}
+            {!progress && piiReview && piiReview.length > 0 && (
+              <PIIReviewPanel fields={piiReview} />
+            )}
+            {extractedData && <ExtractedDataPanel data={extractedData} />}
+            {!progress && piiRegions && piiRegions.length > 0 && (
+              <PIIResultsPanel regions={piiRegions} />
+            )}
+          </TaskInput>
         )}
         {activeTab === "ai" && <ProviderSettings />}
         {activeTab === "models" && <RuntimePanel />}

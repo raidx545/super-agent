@@ -29,7 +29,8 @@
     .btn-secondary { background: #e3f2fd; color: #1565c0; }
     .pii-banner { padding: 12px 16px; background: #fce4ec; border-left: 4px solid #e91e63; border-radius: 0 4px 4px 0; margin-bottom: 16px; font-size: 13px; color: #880e4f; }
     .demo-banner { padding: 12px 16px; background: #e8f5e9; border-left: 4px solid #4caf50; border-radius: 0 4px 4px 0; margin-bottom: 16px; font-size: 13px; color: #1b5e20; }
-    .face-photo { width: 120px; height: 150px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 48px; }
+    .face-photo { width: 120px; height: 150px; background: #e0e0e0; border: 2px solid #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 48px; cursor: pointer; overflow: hidden; }
+    .face-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .face-section { display: flex; gap: 24px; align-items: flex-start; }
     .face-section .form-fields { flex: 1; }
     .footer { text-align: center; padding: 24px; color: #888; font-size: 12px; }
@@ -211,8 +212,27 @@
     alert('✅ Form validation passed!\n\nThis is a VLESS demo — no data was submitted to any server.\nAll PII was detected and redacted locally in your browser.');
   });
 
-  document.getElementById('facePhoto')?.addEventListener('click', () => {
-    document.getElementById('photo')?.click();
+  const facePhoto = document.getElementById('facePhoto');
+  const photoInput = document.getElementById('photo');
+
+  facePhoto?.addEventListener('click', () => photoInput?.click());
+
+  photoInput?.addEventListener('change', () => {
+    const file = photoInput.files?.[0];
+    if (!file || !facePhoto) return;
+
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.alt = 'Applicant photo';
+    img.onload = () => {
+      facePhoto.replaceChildren(img);
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      facePhoto.replaceChildren(document.createTextNode('⚠️'));
+    };
+    img.src = url;
   });
 </script>
 

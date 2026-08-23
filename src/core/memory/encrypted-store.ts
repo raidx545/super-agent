@@ -167,6 +167,20 @@ async function saveKeyToDB(key: CryptoKey): Promise<void> {
 
 // ── Encrypt/Decrypt ──────────────────────────────────────────
 
+/**
+ * Encrypt an arbitrary value with the device key. Exported so other
+ * at-rest secrets (notably provider API keys) use this same path rather
+ * than inventing a second, weaker one.
+ */
+export async function encryptValue(data: unknown): Promise<string> {
+  return encrypt(data);
+}
+
+/** Counterpart to `encryptValue`. Throws if the ciphertext is not ours. */
+export async function decryptValue<T>(encryptedBase64: string): Promise<T> {
+  return decrypt<T>(encryptedBase64);
+}
+
 async function encrypt(data: unknown): Promise<string> {
   const key = await getEncryptionKey();
   const iv = crypto.getRandomValues(new Uint8Array(12));

@@ -55,6 +55,8 @@ export interface FormField {
   rect: DOMRect;
   label: string;
   filledByUser: boolean;
+  /** Selection state for radio/checkbox. Undefined for other input types. */
+  checked?: boolean;
 }
 
 export interface PageMetadata {
@@ -304,11 +306,13 @@ export type MessageType =
   | "GET_PRIVACY_STATS"
   | "EXECUTE_PIPELINE"
   | "PIPELINE_COMPLETE"
+  | "PIPELINE_PROGRESS"
   | "CHECK_PROVIDERS"
   | "DO_CAPTURE_TAB"
   | "CAPTURE_SCREENSHOT"
   | "CAPTURE_FULL_PAGE"
   | "GET_TRIPWIRE_STATS"
+  | "REPORT_PAGE_EGRESS"
   | "INJECT_REDACTION_CSS"
   | "REMOVE_REDACTION_CSS"
   | "SHOW_PII_OVERLAY"

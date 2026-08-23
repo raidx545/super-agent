@@ -45,3 +45,9 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+.rocketride/
+
+landing2
+landing
+architecture.svg
+.claude

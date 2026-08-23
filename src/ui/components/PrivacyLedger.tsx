@@ -61,9 +61,9 @@ export function PrivacyLedger() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) return;
-        const response = await chrome.tabs.sendMessage(tab.id, {
+        // The background owns the merged ledger (blocked extension egress
+        // + page observations relayed from the MAIN-world tripwire).
+        const response = await chrome.runtime.sendMessage({
           type: "GET_TRIPWIRE_STATS",
           payload: null,
           source: "sidepanel",

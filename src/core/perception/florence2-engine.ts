@@ -12,13 +12,28 @@
 // of everything visible on screen.
 // ============================================================
 
+// Must precede the transformers.js import: its module init sets
+// ONNX_ENV.wasm.wasmPaths to a CDN URL unless one is already set.
+import { ortRuntimeUrl } from "../runtime/ort-env";
 import { env, AutoModelForImageTextToText, AutoProcessor, RawImage } from "@huggingface/transformers";
 import type { Tier } from "../../types/runtime";
+import { MODEL_REGISTRY } from "../runtime/model-registry";
+import { detectBackend } from "../runtime/backend";
 
 // ── Configure transformers.js for browser ────────────────────
 
 env.allowLocalModels = true;
 env.useBrowserCache = true;
+
+// Belt and braces: overwrite whatever transformers.js decided at import time.
+// Its default is a remote jsdelivr URL, which MV3 blocks and which would make
+// "nothing leaves the device" untrue on every cold start.
+try {
+  (env.backends as any).onnx.wasm.wasmPaths = ortRuntimeUrl();
+  (env.backends as any).onnx.wasm.numThreads = 1;
+} catch {
+  // Older/newer shapes of env.backends — the ort-env pin already covers us.
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -75,21 +90,75 @@ let model: any = null;
 let processor: any = null;
 let modelLoadTime = 0;
 
-async function ensureModel(): Promise<void> {
+/** Repo id — also used by the model host to pre-warm the browser cache. */
+export const FLORENCE_MODEL_ID = "onnx-community/Florence-2-base-ft";
+
+/**
+ * Pick the weight precision for this machine.
+ *
+ * This MUST follow the registry's `dtypeByTier`. Hardcoding fp32 here
+ * pulled 1.09 GB on every tier — three times the size the registry
+ * advertises, downloaded lazily in the middle of a pipeline run.
+ * fp16 is ~544 MB, q4 ~333 MB.
+ */
+function dtypeForTier(tier: Tier): string {
+  const entry = MODEL_REGISTRY.florence2;
+  return entry.dtypeByTier?.[tier] ?? "q4";
+}
+
+/**
+ * Load the model, reporting progress so a pre-warm can show a real bar
+ * instead of stalling silently on a multi-hundred-megabyte download.
+ */
+async function ensureModel(
+  onProgress?: (fraction: number) => void
+): Promise<void> {
   if (model && processor) return;
 
   const t0 = performance.now();
+  const be = await detectBackend();
+  const dtype = dtypeForTier(be.tier);
 
-  // Florence-2-base-ft via transformers.js — ONNX Runtime Web handles WebGPU/WASM
-  const MODEL_ID = "onnx-community/Florence-2-base-ft";
+  // transformers.js reports per-file progress; average across files so the
+  // caller sees one monotonic-ish fraction rather than several restarts.
+  const fileProgress = new Map<string, number>();
+  const progress_callback = onProgress
+    ? (p: any) => {
+        if (p?.status === "progress" && typeof p.progress === "number") {
+          fileProgress.set(p.file ?? "?", p.progress / 100);
+        } else if (p?.status === "done" && p.file) {
+          fileProgress.set(p.file, 1);
+        }
+        if (fileProgress.size > 0) {
+          const sum = [...fileProgress.values()].reduce((a, b) => a + b, 0);
+          onProgress(Math.min(sum / fileProgress.size, 1));
+        }
+      }
+    : undefined;
 
-  processor = await AutoProcessor.from_pretrained(MODEL_ID);
-  model = await AutoModelForImageTextToText.from_pretrained(MODEL_ID, {
-    dtype: "fp32", // Use fp32 for maximum accuracy at tier A/B
-  });
+  processor = await AutoProcessor.from_pretrained(FLORENCE_MODEL_ID, {
+    progress_callback,
+  } as any);
+  model = await AutoModelForImageTextToText.from_pretrained(FLORENCE_MODEL_ID, {
+    dtype,
+    progress_callback,
+  } as any);
 
   modelLoadTime = performance.now() - t0;
-  console.log(`[VLESS] Florence-2 loaded in ${modelLoadTime.toFixed(0)}ms`);
+  console.log(
+    `[VLESS] Florence-2 loaded (${dtype}, tier ${be.tier}) in ${modelLoadTime.toFixed(0)}ms`
+  );
+}
+
+/**
+ * Download and initialize Florence-2 ahead of time.
+ * Called by the model host so the Models tab can pre-warm it, instead of
+ * a ~333-1086 MB fetch landing in the middle of a live pipeline run.
+ */
+export async function warmFlorence(
+  onProgress?: (fraction: number) => void
+): Promise<void> {
+  await ensureModel(onProgress);
 }
 
 // ── Core Perception Functions ────────────────────────────────

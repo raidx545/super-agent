@@ -7,6 +7,7 @@
 // ============================================================
 
 import { runOcr } from "../ocr/ocr-engine";
+import { scanTextForPII } from "./pii-detector";
 import type { OcrResult } from "../../types/runtime";
 
 // ── Types ────────────────────────────────────────────────────
@@ -98,6 +99,8 @@ export async function verifyRedactionOffscreen(
   residualPII: number;
   wordsFound: number;
   ocrTimeMs: number;
+  ran: boolean;
+  unavailableReason?: string;
 }> {
   const t0 = performance.now();
 
@@ -105,34 +108,29 @@ export async function verifyRedactionOffscreen(
   let ocrResult: OcrResult;
   try {
     ocrResult = await runOcr({ imageDataUrl, lang: "auto" });
-  } catch {
+  } catch (err) {
+    // OCR unavailable (models not downloaded, backend init failed) means
+    // verification could not be ATTEMPTED. That is not the same as
+    // verification failing, and must not be reported as residual PII —
+    // the old `-1` rendered in the UI as "-1 PII regions residual".
     return {
       passed: false,
-      residualPII: -1,
+      residualPII: 0,
       wordsFound: 0,
       ocrTimeMs: performance.now() - t0,
+      ran: false,
+      unavailableReason: err instanceof Error ? err.message : "OCR unavailable",
     };
   }
 
   const ocrTimeMs = performance.now() - t0;
 
-  // Check for residual PII in OCR output
-  const PII_PATTERNS: RegExp[] = [
-    /\b\d{4}\s?\d{4}\s?\d{4}\b/,           // Aadhaar
-    /\b[A-Z]{5}\d{4}[A-Z]\b/,              // PAN
-    /\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b/,   // Card number
-    /\b[A-Z]{4}0[A-Z0-9]{6}\b/,            // IFSC
-    /\b[6-9]\d{9}\b/,                        // Phone
-  ];
-
+  // Check for residual PII using the same checksum-gated scanner as the
+  // rest of the system. Bare regex here reported any 12-digit number left
+  // on the page as a redaction failure.
   let residualPII = 0;
   for (const word of ocrResult.words) {
-    for (const pattern of PII_PATTERNS) {
-      if (pattern.test(word.text)) {
-        residualPII++;
-        break;
-      }
-    }
+    if (scanTextForPII(word.text).length > 0) residualPII++;
   }
 
   return {
@@ -140,6 +138,7 @@ export async function verifyRedactionOffscreen(
     residualPII,
     wordsFound: ocrResult.words.length,
     ocrTimeMs,
+    ran: true,
   };
 }
 

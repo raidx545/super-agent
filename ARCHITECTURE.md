@@ -38,30 +38,41 @@ The key principle: **the server never sees raw screenshots, PII, faces, or passw
 - **Output**: A `PageState` object with 30+ fields per element (tag, role, label, type, position, visibility)
 - **Speed**: ~10-50ms per page (pure JavaScript, no network calls)
 
-### Vision Pipeline (`src/core/models/vision-pipeline.ts`)
+### OCR Engine (`src/core/ocr/ocr-engine.ts`)
 - **Purpose**: Reads text visible on screen using OCR
 - **Tool**: PaddleOCR ONNX models running via ONNX Runtime Web
-- **Models bundled**:
-  - `ppocr-det-v3.onnx` (1.2MB) — text detection (finds where text is on screen)
-  - `ppocr-rec-en.onnx` (7.8MB) — English text recognition (reads the text)
-  - `ppocr-rec-hi.onnx` (8.9MB) — Hindi text recognition (reads Devanagari text)
+- **Runs in**: the offscreen document only (`src/entrypoints/offscreen/`)
+- **Models** (downloaded with `pnpm models`, not committed):
+  - `ppocr-det-v3.onnx` — text detection (finds where text is on screen)
+  - `ppocr-rec-en.onnx` — English text recognition
+  - `ppocr-rec-hi.onnx` — Devanagari text recognition
 - **Runtime**: ONNX Runtime Web with WebGPU acceleration (falls back to WASM)
-- **How it works**:
-  1. Screenshot is taken via `chrome.tabCapture.capture()`
-  2. Image is resized to 640x640 and normalized for the detection model
-  3. Detection model outputs bounding boxes where text exists
-  4. Each bounding box is cropped and fed to the recognition model
-  5. Recognition model outputs the actual text characters (CTC decoding)
+- **Supporting modules**:
+  - `ocr/preprocess.ts` — capture loading, detection-input build, per-quad strip crop
+  - `ocr/db-postprocess.ts` — DB probability map to text quads
+  - `ocr/geometry.ts` — quad geometry and reading-order sort
+  - `ocr/ctc-decode.ts` — charset build and CTC greedy decode
+  - `ocr/ort-session.ts` — session creation and memoization
+- **Language routing**: `en` / `hi` pin a recognizer; `auto` recognizes with
+  English and re-runs only low-confidence regions through Devanagari,
+  keeping the higher-confidence read
 - **Speed**: ~200-500ms per screenshot (depends on number of text regions)
 
-### Hybrid Perceiver (`src/core/perception/hybrid-perceiver.ts`)
-- **Purpose**: Merges DOM and Vision data into a single page understanding
+### Florence-2 Engine (`src/core/perception/florence2-engine.ts`)
+- **Purpose**: Open-vocabulary visual grounding — the local ViT the problem statement asks for
+- **Tool**: `@huggingface/transformers` v3 loading Florence-2-base-ft in the offscreen document
+- **Tasks**: `<OD>` (detect UI elements), `<OCR_WITH_REGION>`, `<CAPTION_TO_PHRASE_GROUNDING>`
+- **Speed**: ~1-3s per frame
+
+### ScreenGraph Fusion (`src/core/perception/screen-graph.ts`)
+- **Purpose**: Merges DOM, OCR, and ViT signals into a single page understanding
 - **Tool**: Custom merge algorithm with IoU (Intersection over Union) deduplication
 - **How it works**:
   1. DOM gives structural data (element types, labels, positions)
-  2. Vision gives OCR text (text visible on screen but not in DOM, like canvas-rendered text)
+  2. OCR and Florence-2 give text and elements visible on screen but absent
+     from the DOM (canvas-rendered text, image buttons)
   3. Overlapping results are deduplicated using bounding-box overlap
-  4. Combined confidence is computed from both signals
+  4. Combined confidence is computed from all contributing signals
 
 ---
 
@@ -112,7 +123,7 @@ This is 60% of the SIH evaluation criteria (PII detection 20% + redaction precis
 
 **DOM CSS injection**: Generates CSS rules that overlay sensitive form fields with visual indicators (red borders, lock icons) so the user can see what's being protected.
 
-### Screenshot Redactor (`src/core/privacy/screenshot-redactor.ts`)
+### Screenshot Redactor (`src/core/privacy/offscreen-redact.ts`)
 - **Purpose**: Redacts PII directly in screenshot pixels before sending to server
 - **Tool**: OffscreenCanvas (works in service workers without DOM)
 - **How it works**:
@@ -242,13 +253,11 @@ The LLM never sees PII values. It only sees that a field exists, its type, and t
 - **Encryption**: AES-256-GCM with a key derived from the extension's unique origin
 - **Why encrypted**: The memory contains site-specific data that should never be readable by other extensions or browser tools
 
-### Self-Improving Agent (`src/core/agent/self-improving.ts`)
-- **Purpose**: Learns from success and failure to improve over time
-- **How**:
-  - Records action success/failure rates per element type per site
-  - Adjusts confidence scores based on historical performance
-  - Stores optimal timing delays per action type
-  - Detects patterns (e.g., "on this site, submit buttons need double-click")
+### Self-Improving Agent — NOT IMPLEMENTED
+Planned: record per-site action success rates, adjust confidence from history,
+learn optimal delays. No module exists for this today. The closest shipped
+behaviour is the reasoning trace and learning log below, which record what
+happened but do not feed anything back into planning.
 
 ### Learning Log (`src/core/agent/learning-log.ts`)
 - **Purpose**: Narrated activity feed showing what the agent is doing and why
@@ -256,43 +265,20 @@ The LLM never sees PII values. It only sees that a field exists, its type, and t
 
 ---
 
-## Layer 6: Multi-Tab Workflow Engine
+## Layers 6-8: Not Implemented
 
-### Workflow Engine (`src/core/tab/workflow-engine.ts`)
-- **Purpose**: Handles tasks that span multiple tabs
-- **Example**: "Copy data from spreadsheet, fill it in a form, then submit"
-- **How**:
-  1. Captures state from Tab A
-  2. Stores it in the workflow context
-  3. Switches to Tab B
-  4. Uses stored context to fill fields
-  5. Verifies completion
+Three subsystems are described in earlier drafts of this document but have no
+code in `src/`. They are listed here so the gap is explicit rather than implied:
 
----
+| Subsystem | Intended behaviour | Status |
+|---|---|---|
+| Multi-tab workflow engine | Carry state across tabs ("copy from the sheet, fill the form") | Not implemented — no `src/core/tab/` |
+| Voice commands | Web Speech API control in Hindi + English | Not implemented — `src/ui/components/VoiceControl.tsx` is a placeholder |
+| Deterministic replay | Record a task once, replay without LLM inference | Not implemented — no `src/core/replay/` |
 
-## Layer 7: Voice Commands
-
-### Command Listener (`src/core/voice/command-listener.ts`)
-- **Purpose**: Control the agent by speaking in Hindi or English
-- **Tool**: Web Speech API (`SpeechRecognition`)
-- **Supported commands**:
-  - "Fill this form" / "Form bharo"
-  - "Click submit" / "Submit pe click karo"
-  - "Scroll down" / "Neeche jao"
-  - "What's on this page?" / "Page pe kya hai?"
-- **Languages**: English + Hindi (devanagari)
-
----
-
-## Layer 8: Deterministic Replay
-
-### Replay Engine (`src/core/replay/deterministic-replay.ts`)
-- **Purpose**: Record a task once, replay it 15x faster without LLM inference
-- **How**:
-  1. First execution records all actions with timestamps and page states
-  2. Subsequent executions replay the recorded actions directly
-  3. If a page state differs, it falls back to LLM planning for that step
-  4. Speed optimization: skips wait times, uses cached element positions
+Specification-grade tests for the workflow engine and replay engine are parked
+in `tests/pending/`, excluded from the suite, and are not evidence that the
+features work.
 
 ---
 
@@ -316,7 +302,7 @@ Step 3: REDACT (10-30ms)
   redaction-engine.ts generates CSS rules for PII fields
   -> Content script injects CSS into the page (visual indicators)
   -> visual-overlay.ts shows bounding boxes on the page
-  -> If screenshot available: screenshot-redactor.ts blurs faces, blacks passwords
+  -> If screenshot available: offscreen-redact.ts blurs faces, blacks passwords
 
 Step 4: SANITIZE (1ms)
   full-pipeline.ts builds SanitizedContext

@@ -10,7 +10,10 @@
 // NEVER accesses document, window, or DOM APIs.
 // ============================================================
 
-import { detectAllPII, type PIIDetectionResult } from "../privacy/pii-detector";
+import { detectAllPII, maskPIIInText, type PIIDetectionResult } from "../privacy/pii-detector";
+import { extractPageData, type ExtractedData } from "../extraction/page-extractor";
+import { decomposeTask, actionDescription, type SubTask } from "../agent/task-decomposer";
+import { computeRequirements, summarizeOutcome, type RequiredInput } from "../agent/requirements";
 import { generateDOMRedactionCSS } from "../privacy/redaction-engine";
 import { initializeServer, isServerAvailable, getActiveProvider, type SanitizedContext, type PlanResult } from "../agent/server-bridge";
 import { callOffscreen } from "../runtime/messaging";
@@ -28,6 +31,29 @@ export interface PipelineInput {
   taskDescription: string;
   dataContext?: Record<string, string>;
   tabId?: number;
+  /** Called after every step transition so callers can stream progress. */
+  onProgress?: (update: PipelineProgress) => void;
+  /** Recent task descriptions, so a follow-up like "submit form" has context. */
+  recentTasks?: string[];
+}
+
+export interface PIIReviewField {
+  /** Human label as it appears on the form. */
+  label: string;
+  /** CSS selector the client uses to write a correction back. */
+  selector: string;
+  category: string | null;
+  /** What is in the field right now, after execution. */
+  value: string;
+  required: boolean;
+  type: string;
+}
+
+export interface PipelineProgress {
+  /** Name of the step that just changed state. */
+  currentPhase: string;
+  steps: PipelineStep[];
+  elapsedMs: number;
 }
 
 export interface PipelineResult {
@@ -42,6 +68,16 @@ export interface PipelineResult {
   reasoningTrace: ReasoningTrace | null;
   latency: LatencyBreakdown;
   totalLatencyMs: number;
+  /** Present only for extraction tasks — never sent to any provider. */
+  extractedData?: ExtractedData;
+  /** How the request was decomposed. One entry for a simple task. */
+  subTasks?: SubTask[];
+  /** Post-action state of every sensitive field, for user review and correction. */
+  piiReview?: PIIReviewField[];
+  /** What the agent still needs FROM THE USER to finish. */
+  needs?: RequiredInput[];
+  /** One line covering both what was done and what is outstanding. */
+  outcome?: string;
   error?: string;
 }
 
@@ -102,6 +138,22 @@ export async function executeFullPipeline(
   startTrace(`pipeline-${Date.now()}`, input.taskDescription);
   traceObserve(`Pipeline started: "${input.taskDescription}"`);
 
+  // Emit a snapshot after every step transition so the side panel can show
+  // the run as it happens. Without this the panel sits blank for the whole
+  // pipeline and only reacts to PIPELINE_COMPLETE at the very end.
+  const emitProgress = (currentPhase: string) => {
+    if (!input.onProgress) return;
+    try {
+      input.onProgress({
+        currentPhase,
+        steps: steps.map((st) => ({ ...st })),
+        elapsedMs: performance.now() - startTime,
+      });
+    } catch {
+      // Progress reporting must never break the pipeline.
+    }
+  };
+
   const addStep = (name: string): PipelineStep => {
     const step: PipelineStep = { name, status: "pending", latencyMs: 0, details: "" };
     steps.push(step);
@@ -110,16 +162,19 @@ export async function executeFullPipeline(
 
   const runStep = async <T>(step: PipelineStep, fn: () => Promise<T>): Promise<T | null> => {
     step.status = "running";
+    emitProgress(step.name);
     const t0 = performance.now();
     try {
       const result = await fn();
       step.status = "complete";
       step.latencyMs = performance.now() - t0;
+      emitProgress(step.name);
       return result;
     } catch (err) {
       step.status = "error";
       step.latencyMs = performance.now() - t0;
       step.details = err instanceof Error ? err.message : "Unknown error";
+      emitProgress(step.name);
       return null;
     }
   };
@@ -395,14 +450,23 @@ export async function executeFullPipeline(
         return {
           passed: result.passed,
           piiTextFound: result.residualPII,
+          ran: result.ran,
+          unavailableReason: result.unavailableReason,
           timings: { ocr: result.ocrTimeMs },
         };
       });
       if (verifyResult) {
         redactionVerified = verifyResult.passed;
-        verifyStep.details = verifyResult.passed
-          ? `✅ Verified: 0 PII in pixels (${verifyResult.timings.ocr.toFixed(0)}ms)`
-          : `❌ ${verifyResult.piiTextFound} PII regions residual`;
+        if (!verifyResult.ran) {
+          // Could not be attempted — report that, rather than implying the
+          // redaction failed. Most commonly the OCR models are not installed
+          // (run `pnpm models`).
+          verifyStep.details = `⚠️ Not verified — OCR unavailable (${verifyResult.unavailableReason ?? "unknown"})`;
+        } else {
+          verifyStep.details = verifyResult.passed
+            ? `✅ Verified: 0 PII in pixels (${verifyResult.timings.ocr.toFixed(0)}ms)`
+            : `❌ ${verifyResult.piiTextFound} PII regions residual`;
+        }
         // Trace: redaction verification
         traceRedactionVerification(verifyResult.passed, verifyResult.piiTextFound, verifyResult.timings.ocr);
       }
@@ -431,6 +495,91 @@ export async function executeFullPipeline(
     });
 
     // ════════════════════════════════════════════════════════
+    // PHASE 5a: EXTRACTION SHORT-CIRCUIT
+    //
+    // A read task ends here. It does not build a sanitized context, does
+    // not contact a provider, and does not execute actions — the action
+    // planner has no vocabulary for "read", so sending an extraction
+    // request through it produces dozens of invented clicks.
+    // ════════════════════════════════════════════════════════
+
+    const subTasks = decomposeTask(input.taskDescription);
+    const wantsExtraction = subTasks.some((st) => st.kind === "extract");
+    const wantsAction = subTasks.some((st) => st.kind === "action");
+
+    // Reads are cheap and side-effect-free, so they run first and always.
+    // Actions continue into planning below and stay strictly ordered —
+    // mutating one DOM from two places at once corrupts both.
+    let extractedData: ExtractedData | undefined;
+
+    if (wantsExtraction) {
+      const extractStep = addStep("extract");
+      const result = await runStep(extractStep, async () =>
+        extractPageData(domData, piiDetection)
+      );
+      extractedData = result ?? undefined;
+      if (extractedData) {
+        extractStep.details = `${extractedData.summary.fieldCount} fields, ${extractedData.summary.maskedFieldCount} masked`;
+      }
+    }
+
+    // Pure read request: nothing to plan, nothing to send.
+    if (wantsExtraction && !wantsAction) {
+      const extractLatency = performance.now() - startTime;
+      const findMs = (name: string) => steps.find((st) => st.name === name)?.latencyMs || 0;
+
+      privacyProof.dataSentToServer = {
+        rawScreenshot: false,
+        formValues: false,
+        piiText: false,
+        faces: false,
+        sanitizedStructure: false,
+        taskDescription: false,
+      };
+      privacyProof.proofDescription =
+        "Extraction ran entirely on-device. No context was built and no provider was contacted.";
+
+      return {
+        success: Boolean(extractedData),
+        phase: "complete",
+        steps,
+        plan: [],
+        piiDetection,
+        redactionSummary,
+        planResult: {
+          success: true,
+          steps: [],
+          reasoning: "Local extraction — no planner involved.",
+          provider: "on-device",
+          latencyMs: findMs("extract"),
+        },
+        privacyProof,
+        reasoningTrace: completeTrace(true),
+        latency: {
+          capture: findMs("capture"),
+          ocr: findMs("detect_pii"),
+          piiDetection: findMs("detect_pii"),
+          redaction: findMs("redact"),
+          verification: findMs("verify_redaction"),
+          planning: 0,
+          execution: 0,
+          total: extractLatency,
+          backend: "on-device",
+          tier: "auto",
+        },
+        totalLatencyMs: extractLatency,
+        extractedData,
+        subTasks,
+      };
+    }
+
+    // Mixed or action-only: the planner sees only the ACTION clauses, so an
+    // extraction preamble never becomes invented click steps.
+    const planningTask = wantsAction
+      ? actionDescription(subTasks) || input.taskDescription
+      : input.taskDescription;
+
+    // ════════════════════════════════════════════════════════
     // PHASE 5: BUILD SANITIZED CONTEXT
     // ════════════════════════════════════════════════════════
 
@@ -450,29 +599,15 @@ export async function executeFullPipeline(
 
     const planStep = addStep("get_plan");
     const planResultData = await runStep(planStep, async () => {
-      // Try multi-provider LLM first, then fallback to server-bridge, then rules
-      const llmResult = await generatePlanWithBestProvider(
-        input.taskDescription,
-        sanitizedContext,
-        input.dataContext
-      );
-      if (llmResult.success && llmResult.steps.length > 0) {
-        return llmResult;
-      }
-      // Fallback to legacy server-bridge
-      if (isServerAvailable()) {
-        const provider = getActiveProvider()!;
-        return provider.generatePlan(
-          input.taskDescription,
-          sanitizedContext,
-          input.dataContext
-        );
-      }
-      // Try deterministic planner first (fast, offline, no LLM needed)
+      // Order matters. The deterministic planner runs FIRST for eligible
+      // form-fill tasks: it is offline, sub-100ms, and its label→value
+      // mapping is auditable. Reaching for an LLM to fill a form we can
+      // map locally spends 1-10s and hands a remote model a page it did
+      // not need to see.
       const { generateDeterministicPlan, isDeterministicEligible } = await import("../agent/deterministic-planner");
       const allFields = domData.forms.flatMap((f: any) => f.fields);
-      if (isDeterministicEligible(input.taskDescription, allFields.length) && input.dataContext) {
-        console.log("[VLESS] Using deterministic planner (no LLM needed)");
+
+      if (isDeterministicEligible(planningTask, allFields.length) && input.dataContext) {
         const detPlan = generateDeterministicPlan(
           allFields.map((f: any, i: number) => ({
             index: i,
@@ -486,7 +621,8 @@ export async function executeFullPipeline(
           })),
           input.dataContext
         );
-        if (detPlan.success) {
+        if (detPlan.success && detPlan.steps.length > 0) {
+          console.log("[VLESS] Deterministic plan (no LLM, no egress)");
           return {
             success: true,
             steps: detPlan.steps,
@@ -496,9 +632,34 @@ export async function executeFullPipeline(
           };
         }
       }
+
+      // Anything the local planner cannot handle goes to an LLM.
+      const llmResult = await generatePlanWithBestProvider(
+        planningTask,
+        sanitizedContext,
+        input.dataContext,
+        input.recentTasks
+      );
+      if (llmResult.success && llmResult.steps.length > 0) {
+        return llmResult;
+      }
+
+      // Legacy server-bridge provider.
+      if (isServerAvailable()) {
+        const provider = getActiveProvider()!;
+        const serverResult = await provider.generatePlan(
+          planningTask,
+          sanitizedContext,
+          input.dataContext
+        );
+        if (serverResult.success && serverResult.steps.length > 0) {
+          return serverResult;
+        }
+      }
+
       // Last resort: rule-based (limited to fill/scroll/click/navigate)
-      console.warn("[VLESS] No LLM available — falling back to rule-based planning.");
-      return generateRuleBasedPlan(input.taskDescription, domData, input.dataContext);
+      console.warn("[VLESS] No planner succeeded — falling back to rule-based planning.");
+      return generateRuleBasedPlan(planningTask, domData, input.dataContext);
     });
 
     if (planResultData) {
@@ -526,6 +687,38 @@ export async function executeFullPipeline(
       execStep.status = executionResult.success ? "complete" : "error";
       execStep.details = `${executionResult.completed}/${executionResult.total} steps` +
         (executionResult.errors.length > 0 ? ` (${executionResult.errors.length} errors)` : "");
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 7.5: REVIEW — re-read the page so the user can check
+    // and correct what actually landed in each sensitive field.
+    //
+    // An agent that fills a government form must not be the last
+    // word on what it wrote. This re-perceives AFTER execution, so
+    // the values shown are what is really in the DOM now, not what
+    // the plan intended.
+    // ════════════════════════════════════════════════════════
+
+    let piiReview: PIIReviewField[] | undefined;
+    let needs: RequiredInput[] | undefined;
+    let outcome: string | undefined;
+    if (executionResult) {
+      const reviewStep = addStep("review");
+      const after = await runStep(reviewStep, async () =>
+        sendToContentScript("PERCEIVE_PAGE", null)
+      );
+      if (after && after.forms) {
+        piiReview = buildPIIReview(after, piiDetection);
+        needs = computeRequirements(after, piiDetection, input.dataContext);
+        outcome = summarizeOutcome(
+          executionResult.completed,
+          executionResult.total,
+          needs
+        );
+        reviewStep.details =
+          `${piiReview.length} sensitive fields` +
+          (needs.length > 0 ? ` · ${needs.length} still need a value` : " · nothing outstanding");
+      }
     }
 
     // ════════════════════════════════════════════════════════
@@ -583,6 +776,11 @@ export async function executeFullPipeline(
       reasoningTrace: completedTrace,
       latency,
       totalLatencyMs: totalLatency,
+      extractedData,
+      subTasks,
+      piiReview,
+      needs,
+      outcome,
     };
   } catch (error) {
 
@@ -596,6 +794,21 @@ export async function executeFullPipeline(
 
 // ── Execute Plan Steps ──────────────────────────────────────
 
+/** Match a planner target against the user's data keys, tolerantly. */
+function resolveDataValue(
+  dataContext: Record<string, string>,
+  target: string
+): string | undefined {
+  if (dataContext[target] !== undefined) return dataContext[target];
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const wanted = norm(target);
+  if (!wanted) return undefined;
+  for (const key of Object.keys(dataContext)) {
+    if (norm(key) === wanted) return dataContext[key];
+  }
+  return undefined;
+}
+
 export async function executePlanSteps(
   plan: PlannedAction[],
   dataContext?: Record<string, string>
@@ -603,11 +816,39 @@ export async function executePlanSteps(
   let completed = 0;
   const errors: string[] = [];
 
+  /**
+   * Strings the sanitizer produces. The planner sees these as field markers
+   * and cheerfully echoes them back as values to type. Typing one into a
+   * real government form writes literal "[PII:address]" into the field, so
+   * they are refused outright — for every field, not just flagged ones.
+   */
+  const isSanitizationArtifact = (value: string): boolean =>
+    /^\s*(\[PII:[^\]]*\]|\[REDACTED:[^\]]*\]|<[A-Z_]+_\d+>|\*{2,})\s*$/i.test(value);
+
+  const skipped: string[] = [];
+
   for (const step of plan) {
-    // Resolve data values
-    if (step.action.type === "type" && dataContext) {
+    if (step.action.type === "type") {
       const target = step.action.target || "";
-      step.action.value = dataContext[target] || step.action.value || "";
+      // Local resolution only. Try the exact key, then a case/whitespace
+      // insensitive match, since planner targets are labels and the user's
+      // data keys rarely agree on capitalisation.
+      const resolved = dataContext ? resolveDataValue(dataContext, target) : undefined;
+
+      if (resolved !== undefined) {
+        step.action.value = resolved;
+      } else if (isSanitizationArtifact(step.action.value || "")) {
+        // No local value AND the planner handed back a marker. Leave the
+        // field alone and tell the user, rather than writing junk into it.
+        skipped.push(target || `step ${step.index}`);
+        continue;
+      }
+
+      // Belt and braces: never write an artifact, whatever its source.
+      if (isSanitizationArtifact(step.action.value || "")) {
+        skipped.push(target || `step ${step.index}`);
+        continue;
+      }
     }
 
     // Multi-strategy execution with fallbacks
@@ -662,8 +903,17 @@ export async function executePlanSteps(
     await sleep(300 + Math.random() * 200);
   }
 
+  if (skipped.length > 0) {
+    // Not a failure of execution — the agent correctly declined to invent
+    // values. Surface it so the user knows which fields still need them.
+    errors.push(
+      `${skipped.length} field(s) left blank — no local value available: ${skipped.slice(0, 5).join(", ")}`
+    );
+  }
+
   return {
-    success: completed === plan.length,
+    // Skipped steps are deliberate, so they do not count against success.
+    success: completed + skipped.length === plan.length,
     completed,
     total: plan.length,
     errors,
@@ -733,22 +983,32 @@ function buildSanitizedContext(
       .map((r) => r.textValue!)
   );
 
-  // Sanitize text: replace PII values with ***
-  let safeTextContent = domData.textContent || "";
-  for (const piiText of piiTextValues) {
-    if (piiText && safeTextContent.includes(piiText)) {
-      safeTextContent = safeTextContent.replace(
-        new RegExp(escapeRegex(piiText), "g"),
-        "***"
-      );
+  // Replace every value this page's detectors already flagged. Applied to
+  // page text AND to element/field labels — anything that reaches a prompt.
+  const scrubKnownPII = (text: string): string => {
+    if (!text) return text;
+    let out = text;
+    for (const piiText of piiTextValues) {
+      if (piiText && out.includes(piiText)) {
+        out = out.replace(new RegExp(escapeRegex(piiText), "g"), "***");
+      }
     }
-  }
+    return out;
+  };
 
-  // Safe elements (no PII values)
+  // Two passes: known detections first, then a checksum-gated sweep for
+  // anything the region detectors missed (canvas text, late-rendered nodes).
+  const safeTextContent = maskPIIInText(scrubKnownPII(domData.textContent || ""));
+
+  // Safe elements (no PII values).
+  // The label falls back to the element's rendered text, which is exactly
+  // where visible PII lives ("Aadhaar: 1234 5678 9012"). Scrub it with the
+  // same checksum-gated scanner used for safeTextContent — otherwise this
+  // field walks straight past sanitization into the prompt.
   const safeElements = domData.elements.map((el) => ({
     tag: el.tag,
     role: el.role,
-    label: el.label || el.text || "",
+    label: maskPIIInText(scrubKnownPII(el.label || el.text || "")),
     type: el.type,
     rect: { x: el.rect.x, y: el.rect.y, width: el.rect.width, height: el.rect.height },
     isVisible: el.isVisible,
@@ -762,7 +1022,7 @@ function buildSanitizedContext(
       const selector = field.id ? `#${field.id}` : field.name ? `[name="${field.name}"]` : null;
       const isPII = selector ? piiFieldSelectors.has(selector) : false;
       return {
-        label: field.label || field.name || "",
+        label: maskPIIInText(scrubKnownPII(field.label || field.name || "")),
         type: field.type,
         hasValue: !!field.value,
         isRequired: field.required,
@@ -794,8 +1054,71 @@ function buildSanitizedContext(
       confidenceScore: piiDetection.summary.overallConfidence,
     },
     taskDescription,
-    dataContext,
+    // Names only. Values stay with the caller and are filled client-side.
+    dataFieldNames: dataContext ? Object.keys(dataContext) : undefined,
   };
+}
+
+/**
+ * Collect every sensitive field with its CURRENT value so the side panel can
+ * show it back and let the user correct anything the agent got wrong.
+ */
+function buildPIIReview(
+  domData: PageState,
+  piiDetection: PIIDetectionResult
+): PIIReviewField[] {
+  const categoryBySelector = new Map<string, string>();
+  for (const region of piiDetection.regions) {
+    if (region.fieldSelector) categoryBySelector.set(region.fieldSelector, region.category);
+  }
+
+  const out: PIIReviewField[] = [];
+  for (const form of domData.forms) {
+    for (const field of form.fields) {
+      const type = (field.type || "").toLowerCase();
+      // Control inputs have no user-entered value to review.
+      if (["checkbox", "radio", "submit", "button", "reset", "image"].includes(type)) continue;
+
+      const selector = field.id
+        ? `#${field.id}`
+        : field.name
+          ? `[name="${field.name}"]`
+          : "";
+      if (!selector) continue;
+
+      const category = categoryBySelector.get(selector) ?? null;
+      // Review covers flagged fields plus anything the agent actually wrote.
+      if (!category && !field.value) continue;
+
+      out.push({
+        label: field.label || field.name || field.id || "(unlabeled)",
+        selector,
+        category,
+        // A password value is never surfaced, not even for review.
+        value: type === "password" ? "" : field.value || "",
+        required: !!field.required,
+        type: field.type || "text",
+      });
+    }
+  }
+  return out;
+}
+
+/** Locate the control that submits the form, preferring explicit submit inputs. */
+function findSubmitTarget(domData: PageState): string | null {
+  const submitField = domData.forms
+    .flatMap((f) => f.fields)
+    .find((f) => (f.type || "").toLowerCase() === "submit");
+  if (submitField) return submitField.id || submitField.name || submitField.label;
+
+  const byText = domData.elements.find((el) => {
+    if (el.tag !== "button" && el.role !== "button") return false;
+    const t = `${el.text} ${el.label}`.toLowerCase();
+    // "save draft" is not a submission.
+    if (/\b(save\s*draft|cancel|reset|back)\b/.test(t)) return false;
+    return /\b(submit|send|confirm|proceed|continue)\b/.test(t);
+  });
+  return byText ? byText.id || byText.text : null;
 }
 
 // ── Rule-Based Plan ──────────────────────────────────────────
@@ -810,7 +1133,15 @@ function generateRuleBasedPlan(
   let idx = 0;
   const lower = taskDescription.toLowerCase();
 
-  if (lower.includes("fill") || lower.includes("complete") || lower.includes("submit")) {
+  // "submit" is its own intent. Treating it as a fill trigger meant asking
+  // to submit re-entered every field instead of pressing the button.
+  const wantsSubmit = /\b(submit|send|confirm)\b/.test(lower);
+  const wantsFill =
+    /\b(fill|complete|enter|populate)\b/.test(lower) ||
+    // "complete the form and submit" is both; bare "submit" is not a fill.
+    (wantsSubmit && /\b(fill|complete|enter)\b/.test(lower));
+
+  if (wantsFill) {
     const allFields = domData.forms.flatMap((f) => f.fields);
     const unfilled = allFields.filter((f) => !f.filledByUser && f.required);
 
@@ -940,6 +1271,23 @@ function generateRuleBasedPlan(
       verification: "URL should change",
       risk: "medium",
     });
+  }
+
+  // Submit: find the form's submit control and press it. Runs after any
+  // fill steps, so "fill and submit" still works in one pass.
+  if (wantsSubmit) {
+    const submitTarget = findSubmitTarget(domData);
+    if (submitTarget) {
+      steps.push({
+        index: idx++,
+        action: { id: `r-${idx}`, type: "click", target: submitTarget, retries: 0, maxRetries: 2 },
+        reasoning: `Press "${submitTarget}"`,
+        confidence: 0.85,
+        verification: "Form should submit or report validation errors",
+        // Submitting a government form is not a low-risk action.
+        risk: "high",
+      });
+    }
   }
 
   // Extract data from page: "extract all text", "get the data", "read this page"

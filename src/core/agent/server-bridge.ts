@@ -11,6 +11,7 @@
 // Only sanitized structural metadata is transmitted.
 // ============================================================
 
+import { guardedFetch } from "../privacy/egress-guard";
 import type { PlannedAction, AgentAction } from "../../types";
 
 // ── Configuration ────────────────────────────────────────────
@@ -75,7 +76,13 @@ export interface SanitizedContext {
   };
   // Task context
   taskDescription: string;
-  dataContext?: Record<string, string>;
+  // NOTE: user data (`dataContext`) is deliberately NOT a member of this
+  // type. This object is the thing we hand to LLM providers, so anything
+  // reachable from it is one `JSON.stringify` away from being sent. The
+  // values stay in a sibling parameter that never enters a prompt; only
+  // the field *shape* is exposed, via `dataFieldNames` below.
+  /** Keys of the user's data context — names only, never values. */
+  dataFieldNames?: string[];
 }
 
 export interface PlanResult {
@@ -190,7 +197,7 @@ ${context.pageStructure.metadata.hasCAPTCHA ? "CAPTCHA detected." : ""}`;
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
     try {
-      const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
+      const response = await guardedFetch(`${OLLAMA_HOST}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -259,7 +266,7 @@ class CloudProxyProvider implements ServerProvider {
     }
 
     try {
-      const response = await fetch(`${CLOUD_PROXY_HOST}/api/plan`, {
+      const response = await guardedFetch(`${CLOUD_PROXY_HOST}/api/plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

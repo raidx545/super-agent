@@ -9,7 +9,10 @@
 
 import { defineContentScript } from "wxt/utils/define-content-script";
 import type { Message, PageState, AgentAction } from "../../types";
-import { activateTripwire, getTripwireStats } from "../../core/privacy/tripwire";
+import { TRIPWIRE_MESSAGE, type TripwireMessage } from "../../core/privacy/tripwire";
+
+/** Cap on observations accepted from one postMessage — the sender is untrusted. */
+const MAX_RELAYED_OBSERVATIONS = 50;
 
 export default defineContentScript({
   matches: ["<all_urls>"],
@@ -26,14 +29,51 @@ export default defineContentScript({
     // The previous MutationObserver scaffolding here was never consumed, so it
     // was removed rather than left as dead weight.
 
-    // ── PII Tripwire ──────────────────────────────────────
-    // Activate the privacy tripwire on every page load.
-    // This hooks fetch/XHR and BLOCKS any request containing PII.
-    try {
-      activateTripwire();
-    } catch {
-      // Tripwire activation is best-effort
-    }
+    // ── PII Tripwire relay ────────────────────────────────
+    // The tripwire itself runs in the MAIN world (tripwire.content.ts) —
+    // an isolated-world patch of fetch/XHR cannot see page traffic. Here
+    // we only relay its observations to the background, which owns the
+    // merged Privacy Ledger.
+    window.addEventListener("message", (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data as TripwireMessage | undefined;
+      if (!data || data.source !== TRIPWIRE_MESSAGE) return;
+      if (!Array.isArray(data.observations) || data.observations.length === 0) return;
+
+      // Page scripts share this window and can post the same shape, so the
+      // payload is untrusted: validate it and cap the volume rather than
+      // letting a hostile page stuff the Privacy Ledger with fabricated
+      // entries. Everything here is display-only and already masked.
+      const observations = data.observations
+        .slice(0, MAX_RELAYED_OBSERVATIONS)
+        .filter(
+          (o) =>
+            o &&
+            typeof o.url === "string" &&
+            typeof o.method === "string" &&
+            typeof o.bytes === "number" &&
+            Number.isFinite(o.bytes) &&
+            Array.isArray(o.matches)
+        )
+        .map((o) => ({
+          url: o.url.slice(0, 512),
+          method: o.method.slice(0, 16),
+          bytes: Math.max(0, Math.min(o.bytes, Number.MAX_SAFE_INTEGER)),
+          matches: o.matches.slice(0, 32),
+        }));
+      if (observations.length === 0) return;
+
+      chrome.runtime
+        .sendMessage({
+          type: "REPORT_PAGE_EGRESS",
+          payload: observations,
+          source: "content",
+          timestamp: Date.now(),
+        })
+        .catch(() => {
+          // Background may be asleep — observations are best-effort.
+        });
+    });
 
     // ── Message Router ─────────────────────────────────────
 
@@ -92,10 +132,6 @@ export default defineContentScript({
           case "UPDATE_PIPELINE_PANEL":
             updatePipelinePanel(message.payload as any);
             sendResponse({ success: true });
-            break;
-
-          case "GET_TRIPWIRE_STATS":
-            sendResponse(getTripwireStats());
             break;
 
           case "CAPTURE_FULL_PAGE":
@@ -231,7 +267,15 @@ export default defineContentScript({
               toJSON: () => ({}),
             } as DOMRect,
             label: getFieldLabel(input),
-            filledByUser: !!(input as HTMLInputElement).value,
+            // A radio/checkbox always reports its option token as `.value`,
+            // selected or not — so "has a value" is meaningless for them.
+            // Selection is the real signal.
+            checked: isCheckable(input)
+              ? (input as HTMLInputElement).checked
+              : undefined,
+            filledByUser: isCheckable(input)
+              ? (input as HTMLInputElement).checked
+              : !!(input as HTMLInputElement).value,
           };
         }),
       }));
@@ -1125,6 +1169,12 @@ export default defineContentScript({
         return false;
       if (parseFloat(style.opacity) < 0.1) return false;
       return true;
+    }
+
+    /** Radio and checkbox carry a fixed option token in `.value`. */
+    function isCheckable(el: Element): boolean {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      return el.tagName === "INPUT" && (type === "radio" || type === "checkbox");
     }
 
     function getFieldLabel(input: Element): string {

@@ -4,9 +4,16 @@
 // Direct API calls from background service worker.
 // No proxy server required for cloud providers.
 //
-// API keys stored in chrome.storage.sync (encrypted at rest).
+// API keys are encrypted with the device AES-GCM key (see
+// core/memory/encrypted-store) and held in chrome.storage.LOCAL.
+// Not storage.sync: that replicates through the user's Google account,
+// which is the opposite of what an on-device privacy tool should do
+// with a bearer credential.
 // ============================================================
 
+import { guardedFetch } from "../privacy/egress-guard";
+import { encryptValue, decryptValue } from "../memory/encrypted-store";
+import { maskPIIInText } from "../privacy/pii-detector";
 import type { SanitizedContext, PlanResult } from "./server-bridge";
 import type { PlannedAction } from "../../types";
 
@@ -67,42 +74,156 @@ const DEFAULT_CONFIGS: Record<ProviderID, ProviderConfig> = {
   openrouter: {
     id: "openrouter",
     name: "OpenRouter",
+    // Enabled automatically when WXT_OPENROUTER_API_KEY is present at
+    // build time; otherwise the user turns it on in Provider Settings.
     enabled: false,
     baseUrl: "https://openrouter.ai/api/v1",
-    model: "meta-llama/llama-3.2-1b-instruct",
+    model: "openai/gpt-4o-mini",
     temperature: 0.3,
     maxTokens: 2048,
   },
 };
 
+// ── Build-Time Env Keys ─────────────────────────────────────
+//
+// WXT inlines `WXT_*` variables from .env at BUILD time. There is no
+// runtime env in an MV3 extension, so whatever is set here is compiled
+// into background.js as a literal string and is readable by anyone who
+// loads the unpacked extension or unzips the build.
+//
+// That is fine for local development and a demo machine. It is NOT a
+// place for a key you care about — for anything shared or published,
+// enter the key in Provider Settings instead, which stores it encrypted
+// with the device key and never writes it into the bundle.
+//
+// The env value is only a FALLBACK: a key saved through the UI always
+// wins, so a developer's .env cannot silently override a real user's key.
+
+/** Reads a build-time env var without exploding where import.meta.env is absent. */
+function buildTimeEnv(name: string): string | undefined {
+  try {
+    const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    const value = env?.[name];
+    return value && value.trim() ? value.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Per-provider build-time key fallbacks. */
+const ENV_KEY_VARS: Partial<Record<ProviderID, string>> = {
+  openrouter: "WXT_OPENROUTER_API_KEY",
+  claude: "WXT_ANTHROPIC_API_KEY",
+  openai: "WXT_OPENAI_API_KEY",
+};
+
+/**
+ * Apply build-time keys to any provider that has no stored key.
+ * A provider that gains a key this way is enabled, so a fresh install
+ * with a populated .env works without visiting the settings tab.
+ */
+function applyEnvKeyFallbacks(
+  configs: Record<ProviderID, ProviderConfig>
+): Record<ProviderID, ProviderConfig> {
+  for (const id of Object.keys(ENV_KEY_VARS) as ProviderID[]) {
+    if (configs[id]?.apiKey) continue; // Stored key wins.
+    const envKey = buildTimeEnv(ENV_KEY_VARS[id]!);
+    if (!envKey) continue;
+    configs[id] = { ...configs[id], apiKey: envKey, enabled: true };
+  }
+  return configs;
+}
+
 // ── Config Storage ──────────────────────────────────────────
 
 const STORAGE_KEY = "vless_provider_configs";
+/** Legacy plaintext location, migrated and cleared on first load. */
+const LEGACY_SYNC_KEY = "vless_provider_configs";
+
+/** On-disk shape: the key is a ciphertext blob, never the raw secret. */
+type StoredProviderConfig = Omit<Partial<ProviderConfig>, "apiKey"> & {
+  apiKeyCipher?: string;
+};
 
 export async function loadProviderConfigs(): Promise<
   Record<ProviderID, ProviderConfig>
 > {
+  const result: Record<ProviderID, ProviderConfig> = {} as any;
+  for (const id of Object.keys(DEFAULT_CONFIGS) as ProviderID[]) {
+    result[id] = { ...DEFAULT_CONFIGS[id] };
+  }
+
   try {
-    const stored = await chrome.storage.sync.get(STORAGE_KEY);
-    const saved = (stored[STORAGE_KEY] || {}) as Record<
-      ProviderID,
-      Partial<ProviderConfig>
-    >;
-    // Merge saved with defaults (so new fields are always present)
-    const result: Record<ProviderID, ProviderConfig> = {} as any;
-    for (const id of Object.keys(DEFAULT_CONFIGS) as ProviderID[]) {
-      result[id] = { ...DEFAULT_CONFIGS[id], ...saved[id] };
+    const stored = await chrome.storage.local.get(STORAGE_KEY);
+    let saved = stored[STORAGE_KEY] as Record<ProviderID, StoredProviderConfig> | undefined;
+
+    if (!saved) {
+      saved = (await migrateFromLegacySync()) ?? undefined;
     }
-    return result;
+    if (!saved) return applyEnvKeyFallbacks(result);
+
+    for (const id of Object.keys(DEFAULT_CONFIGS) as ProviderID[]) {
+      const entry = saved[id];
+      if (!entry) continue;
+      const { apiKeyCipher, ...rest } = entry;
+      result[id] = { ...result[id], ...rest };
+      if (apiKeyCipher) {
+        try {
+          result[id].apiKey = await decryptValue<string>(apiKeyCipher);
+        } catch {
+          // Key material is unreadable (device key rotated or storage
+          // tampered with). Drop it rather than sending a garbage bearer
+          // token to a provider.
+          console.warn(`[VLESS] Could not decrypt stored API key for ${id} — cleared.`);
+          delete result[id].apiKey;
+        }
+      }
+    }
+    return applyEnvKeyFallbacks(result);
   } catch {
-    return { ...DEFAULT_CONFIGS };
+    return applyEnvKeyFallbacks(result);
+  }
+}
+
+/**
+ * One-time move of plaintext keys out of chrome.storage.sync.
+ * Returns the migrated record, or null if there was nothing to migrate.
+ */
+async function migrateFromLegacySync(): Promise<Record<ProviderID, StoredProviderConfig> | null> {
+  try {
+    const legacy = await chrome.storage.sync.get(LEGACY_SYNC_KEY);
+    const configs = legacy[LEGACY_SYNC_KEY] as Record<ProviderID, ProviderConfig> | undefined;
+    if (!configs) return null;
+
+    console.warn("[VLESS] Migrating provider config out of storage.sync into encrypted local storage.");
+    const merged: Record<ProviderID, ProviderConfig> = {} as any;
+    for (const id of Object.keys(DEFAULT_CONFIGS) as ProviderID[]) {
+      merged[id] = { ...DEFAULT_CONFIGS[id], ...(configs[id] || {}) };
+    }
+    await saveProviderConfigs(merged);
+    // Remove the plaintext copy so it stops replicating to Google.
+    await chrome.storage.sync.remove(LEGACY_SYNC_KEY);
+
+    const reread = await chrome.storage.local.get(STORAGE_KEY);
+    return (reread[STORAGE_KEY] as Record<ProviderID, StoredProviderConfig>) || null;
+  } catch {
+    return null;
   }
 }
 
 export async function saveProviderConfigs(
   configs: Record<ProviderID, ProviderConfig>
 ): Promise<void> {
-  await chrome.storage.sync.set({ [STORAGE_KEY]: configs });
+  const toStore: Record<string, StoredProviderConfig> = {};
+  for (const id of Object.keys(configs) as ProviderID[]) {
+    const { apiKey, ...rest } = configs[id];
+    const entry: StoredProviderConfig = { ...rest };
+    if (apiKey) {
+      entry.apiKeyCipher = await encryptValue(apiKey);
+    }
+    toStore[id] = entry;
+  }
+  await chrome.storage.local.set({ [STORAGE_KEY]: toStore });
 }
 
 export async function saveProviderConfig(
@@ -119,9 +240,19 @@ export async function saveProviderConfig(
 function buildPlanningPrompt(
   taskDescription: string,
   context: SanitizedContext,
-  dataContext?: Record<string, string>
+  dataContext?: Record<string, string>,
+  recentTasks?: string[]
 ): { system: string; user: string } {
   const ps = context.pageStructure;
+
+  // The task description is typed by the user and has never been through the
+  // sanitizer. Someone typing "fill aadhaar 2341 2341 2346" would otherwise
+  // send that straight to the provider, past every other protection.
+  const safeTask = maskPIIInText(taskDescription);
+  const history = (recentTasks ?? [])
+    .slice(-3)
+    .map((t) => `- ${maskPIIInText(t)}`)
+    .join("\n");
 
   const elements = ps.elements
     .slice(0, 30)
@@ -192,8 +323,8 @@ Example 2 — Search on YouTube:
 Example 3 — Scroll and read:
 {"reasoning":"User wants to see more content. I'll scroll down to reveal additional information.","steps":[{"action":{"type":"scroll","value":"down"},"reasoning":"Scroll down to see more content","confidence":0.95,"risk":"low"}]}`;
 
-  const user = `TASK: "${taskDescription}"
-
+  const user = `TASK: "${safeTask}"
+${history ? `\nRECENT TASKS IN THIS SESSION (most recent last):\n${history}\nTreat the current task as a follow-up to these. "submit" after a fill means press the submit button, NOT re-enter the fields.\n` : ""}
 PAGE STATE:
 Domain: ${ps.metadata.domain}
 Title: ${ps.metadata.title}
@@ -284,7 +415,7 @@ async function callOllama(
   user: string
 ): Promise<string> {
   const baseUrl = config.baseUrl || "http://localhost:11434";
-  const response = await fetch(`${baseUrl}/api/chat`, {
+  const response = await guardedFetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -315,7 +446,7 @@ async function callClaude(
   if (!config.apiKey) throw new Error("Claude API key not configured");
   const baseUrl = config.baseUrl || "https://api.anthropic.com";
 
-  const response = await fetch(`${baseUrl}/v1/messages`, {
+  const response = await guardedFetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -348,7 +479,7 @@ async function callOpenAI(
   if (!config.apiKey) throw new Error("OpenAI API key not configured");
   const baseUrl = config.baseUrl || "https://api.openai.com/v1";
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await guardedFetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -381,7 +512,7 @@ async function callOpenRouter(
   if (!config.apiKey) throw new Error("OpenRouter API key not configured");
   const baseUrl = config.baseUrl || "https://openrouter.ai/api/v1";
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await guardedFetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -390,7 +521,7 @@ async function callOpenRouter(
       "X-Title": "VLESS Browser Agent",
     },
     body: JSON.stringify({
-      model: config.model || "meta-llama/llama-3.2-1b-instruct",
+      model: config.model || "openai/gpt-4o-mini",
       max_tokens: config.maxTokens || 2048,
       temperature: config.temperature ?? 0.3,
       messages: [
@@ -520,7 +651,8 @@ export async function checkProviders(): Promise<ProviderStatus[]> {
 export async function generatePlanWithBestProvider(
   taskDescription: string,
   sanitizedContext: SanitizedContext,
-  dataContext?: Record<string, string>
+  dataContext?: Record<string, string>,
+  recentTasks?: string[]
 ): Promise<PlanResult> {
   const configs = await loadProviderConfigs();
   const statuses = await checkProviders();
@@ -538,7 +670,8 @@ export async function generatePlanWithBestProvider(
       const { system, user } = buildPlanningPrompt(
         taskDescription,
         sanitizedContext,
-        dataContext
+        dataContext,
+        recentTasks
       );
       const response = await CALLERS[id](config, system, user);
       const parsed = parsePlanResponse(response);

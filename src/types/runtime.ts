@@ -152,9 +152,14 @@ export interface OffscreenMethods {
     params: { imageDataUrl: string };
     result: {
       passed: boolean;
+      /** Count of residual PII reads. Only meaningful when `ran` is true. */
       residualPII: number;
       wordsFound: number;
       ocrTimeMs: number;
+      /** False when OCR was unavailable, so verification could not be attempted. */
+      ran: boolean;
+      /** Why verification could not run, when `ran` is false. */
+      unavailableReason?: string;
     };
   };
   /** Run Florence-2 full screen perception (OD + OCR + caption). */

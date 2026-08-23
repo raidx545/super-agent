@@ -66,7 +66,10 @@ export const MODEL_REGISTRY: Record<ModelId, ModelEntry> = {
     repo: "onnx-community/Florence-2-base-ft",
     task: "image-text-to-text",
     dtypeByTier: { A: "fp16", B: "q4" }, // C skips Florence → OCR+DOM only
-    sizeBytes: 360_000_000,
+    // Measured totals for vision_encoder + encoder + decoder_merged + embed_tokens:
+    //   fp32 1086 MB · fp16 544 MB · q4 333 MB
+    // The engine picks by tier via dtypeByTier; this figure is the q4 case.
+    sizeBytes: 333_000_000,
     minTier: "B",
     required: false,
   },
