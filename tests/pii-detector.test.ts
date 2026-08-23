@@ -1,5 +1,6 @@
 // Tests for the PII detection engine
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   detectPIIFromDOM,
   detectPIIFromVision,
@@ -344,5 +345,44 @@ describe("PII Detector — false positives from real UIDAI form", () => {
       field("Aadhaar Number", "idType", "radio"),
       field("Submit Update Request", "submit", "submit"),
     ])).toHaveLength(0);
+  });
+});
+
+describe("face detection is model-based, never guessed", () => {
+  // Regression from a PNB login page: an HSV skin-tone heuristic (hue 0-50 —
+  // orange through red) matched the bank's own branding and reported the
+  // logo, a PCI DSS badge, a Norton seal and a play button as five
+  // "critical faces". The heuristic was removed rather than tuned.
+  const detectorRaw = readFileSync(
+    new URL("../src/core/privacy/face-detector.ts", import.meta.url), "utf8");
+  // Assert on CODE, not prose: the file's header explains why the heuristic
+  // and the CDN were dropped, and those words must not fail their own test.
+  const detector = detectorRaw
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const legacy = readFileSync(
+    new URL("../src/core/privacy/pii-detector.ts", import.meta.url), "utf8");
+
+  it("uses BlazeFace", () => {
+    expect(detectorRaw).toContain("blaze_face_short_range.tflite");
+    expect(detectorRaw).toContain("FaceDetector.createFromOptions");
+  });
+
+  it("reports unavailable rather than falling back to shape guessing", () => {
+    expect(detectorRaw).toContain('method: "unavailable"');
+    expect(detectorRaw).toContain("No face model available");
+    // No skin-tone maths anywhere in the executable code.
+    expect(detector).not.toMatch(/skinMask|detectFacesHeuristic|dilateMask/);
+  });
+
+  it("the model and runtime are packaged, not fetched from a CDN", () => {
+    expect(detectorRaw).toContain('chrome.runtime.getURL("mediapipe")');
+    expect(detectorRaw).toContain('chrome.runtime.getURL("models/blaze_face_short_range.tflite")');
+    expect(detector).not.toContain("storage.googleapis.com");
+    expect(detector).not.toContain("jsdelivr");
+  });
+
+  it("the skin-tone heuristic is no longer reachable", () => {
+    expect(legacy).not.toContain("detectFacesInCanvas");
   });
 });

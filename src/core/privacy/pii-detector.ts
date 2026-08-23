@@ -609,6 +609,11 @@ export async function detectPIIFromVision(
 
 // ── Face Detection (Canvas-Based) ────────────────────────────
 
+// NOTE: face detection now lives in core/privacy/face-detector.ts, using
+// BlazeFace. The HSV skin-tone heuristic that used to back this up was
+// removed rather than tuned: hue 0-50 is orange-through-red, so on a
+// warm-branded page it reported the brand itself as faces.
+
 async function detectFacesFromCanvas(
   canvas: HTMLCanvasElement
 ): Promise<Array<{ x: number; y: number; width: number; height: number; confidence: number }>> {

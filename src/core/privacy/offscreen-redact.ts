@@ -8,6 +8,7 @@
 
 import { runOcr } from "../ocr/ocr-engine";
 import { scanTextForPII } from "./pii-detector";
+import { detectFaces, type FaceMethod } from "./face-detector";
 import type { OcrResult } from "../../types/runtime";
 
 // ── Types ────────────────────────────────────────────────────
@@ -243,4 +244,58 @@ function blobToDataURL(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+}
+
+// ── Face detection (offscreen only) ──────────────────────────
+
+/**
+ * Find faces in a screenshot.
+ *
+ * This has to live offscreen: the service worker has no canvas and no
+ * FaceDetector, which is why the pipeline previously called detectAllPII
+ * with an undefined canvas and silently detected no faces at all — the
+ * applicant photo on a government form went out unredacted.
+ *
+ * Boxes are returned in VIEWPORT (CSS) coordinates, because that is what
+ * redactScreenshot expects; it re-applies the devicePixelRatio scale itself.
+ */
+export async function detectFacesOffscreen(
+  imageDataUrl: string,
+  viewportWidth?: number,
+  viewportHeight?: number
+): Promise<{
+  faces: Array<{ x: number; y: number; width: number; height: number; confidence: number }>;
+  method: FaceMethod;
+  reason?: string;
+}> {
+  const response = await fetch(imageDataUrl);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  // A real <canvas>, not OffscreenCanvas: FaceDetector.detect() accepts
+  // canvas elements across more Chrome builds than it does OffscreenCanvas.
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+
+  const { faces, method, reason } = await detectFaces(canvas);
+
+  // Image pixels → viewport pixels.
+  const sx = viewportWidth && viewportWidth > 0 ? canvas.width / viewportWidth : 1;
+  const sy = viewportHeight && viewportHeight > 0 ? canvas.height / viewportHeight : 1;
+
+  return {
+    faces: faces.map((f) => ({
+      x: f.x / sx,
+      y: f.y / sy,
+      width: f.width / sx,
+      height: f.height / sy,
+      confidence: f.confidence,
+    })),
+    method,
+    reason,
+  };
 }

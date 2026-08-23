@@ -68,6 +68,10 @@ export interface PageMetadata {
   formCount: number;
   totalElements: number;
   interactiveElements: number;
+  /** CSS-pixel viewport size, for converting screenshot pixels to DOM rects. */
+  viewportWidth?: number;
+  viewportHeight?: number;
+  devicePixelRatio?: number;
 }
 
 // ── Agent Actions ────────────────────────────────────────────

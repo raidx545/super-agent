@@ -99,7 +99,10 @@ export const MODEL_REGISTRY: Record<ModelId, ModelEntry> = {
     kind: "mediapipe",
     purpose: "Detect faces in the screenshot for redaction.",
     assetUrl:
-      "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+      // Packaged with the extension by `pnpm models`, NOT fetched from
+    // Google's CDN. A tool claiming nothing leaves the device must not
+    // pull its own face model over the network on first use.
+    "models/blaze_face_short_range.tflite",
     sizeBytes: 230_000,
     minTier: "C",
     required: false,

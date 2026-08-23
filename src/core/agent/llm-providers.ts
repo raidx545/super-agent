@@ -744,3 +744,107 @@ ${context.pageStructure.metadata.hasPaymentForm ? "Has payment form." : ""}`;
     return "Could not explain page.";
   }
 }
+
+// ── Vision question answering ────────────────────────────────
+
+/**
+ * Ask a provider a question about an image and get prose back — not a plan.
+ *
+ * PRECONDITION: `imageDataUrl` MUST be the redacted frame. This is the only
+ * place VLESS sends pixels anywhere, and sending the raw capture would hand a
+ * provider exactly the faces and values the pipeline just removed. The caller
+ * is responsible for passing the output of the redaction stage; this function
+ * refuses anything that is not a data URL so a file path or remote URL cannot
+ * be substituted by mistake.
+ */
+export async function askWithImage(
+  system: string,
+  user: string,
+  imageDataUrl: string
+): Promise<string> {
+  if (!/^data:image\//.test(imageDataUrl)) {
+    throw new Error("askWithImage requires an inline data: image (the redacted frame)");
+  }
+
+  const configs = await loadProviderConfigs();
+  const statuses = await checkProviders();
+
+  // Ollama first: a local vision model answers without any egress at all.
+  const priority: ProviderID[] = ["ollama", "claude", "openai", "openrouter"];
+
+  for (const id of priority) {
+    const status = statuses.find((s) => s.id === id);
+    const config = configs[id];
+    if (!status?.available || !config?.enabled) continue;
+
+    try {
+      if (id === "claude") {
+        const [, meta, b64] = imageDataUrl.match(/^data:(image\/[a-z+]+);base64,(.*)$/i) ?? [];
+        if (!b64) throw new Error("unsupported image encoding");
+        const res = await guardedFetch(`${config.baseUrl || "https://api.anthropic.com"}/v1/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": config.apiKey || "",
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({
+            model: config.model || "claude-3-5-haiku-20241022",
+            max_tokens: 512,
+            system,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: meta, data: b64 } },
+                { type: "text", text: user },
+              ],
+            }],
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const text = data.content?.[0]?.text;
+        if (text) return text;
+        continue;
+      }
+
+      // OpenAI, OpenRouter and Ollama all accept the OpenAI image_url shape.
+      const baseUrl =
+        config.baseUrl ||
+        (id === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1");
+      const endpoint = id === "ollama" ? `${baseUrl}/v1/chat/completions` : `${baseUrl}/chat/completions`;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+
+      const res = await guardedFetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: 512,
+          messages: [
+            { role: "system", content: system },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: user },
+                { type: "image_url", image_url: { url: imageDataUrl } },
+              ],
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const text = data.choices?.[0]?.message?.content;
+      if (text) return text;
+    } catch {
+      // Try the next provider.
+    }
+  }
+
+  return "";
+}

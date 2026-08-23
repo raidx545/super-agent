@@ -4,12 +4,14 @@ import { ExtractedDataPanel } from "./ExtractedDataPanel";
 import type { ExtractedData } from "../../core/extraction/page-extractor";
 import type { PipelineProgress, PIIReviewField } from "../../core/pipeline/full-pipeline";
 import type { RequiredInput } from "../../core/agent/requirements";
+import type { Answer } from "../../core/agent/question-answering";
 import type { PIIRegion } from "../../core/privacy/pii-detector";
 import type { SubTask } from "../../core/agent/task-decomposer";
 import { PipelineProgressPanel } from "./PipelineProgressPanel";
 import { PIIResultsPanel } from "./PIIResultsPanel";
 import { PIIReviewPanel } from "./PIIReviewPanel";
 import { NeedsInputPanel } from "./NeedsInputPanel";
+import { AnswerPanel } from "./AnswerPanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 
 import { LearningLog } from "./LearningLog";
@@ -49,6 +51,7 @@ export function App() {
   const [subTasks, setSubTasks] = useState<SubTask[] | null>(null);
   const [piiReview, setPiiReview] = useState<PIIReviewField[] | null>(null);
   const [needs, setNeeds] = useState<RequiredInput[] | null>(null);
+  const [answer, setAnswer] = useState<Answer | null>(null);
   const [lastTask, setLastTask] = useState<{ description: string; data?: Record<string, string> } | null>(null);
   const [reasoningTrace, setReasoningTrace] = useState<ReasoningStep[]>([]);
   const [, _setPageState] = useState<PageState | null>(null);
@@ -122,6 +125,9 @@ export function App() {
           }
           if (message.payload?.needs?.length) {
             setNeeds(message.payload.needs);
+          }
+          if (message.payload?.answer) {
+            setAnswer(message.payload.answer);
           }
           // An extraction task completes with an empty plan — it never goes
           // through the planner — so it must be handled before the plan-length
@@ -226,6 +232,7 @@ export function App() {
     setSubTasks(null);
     setPiiReview(null);
     setNeeds(null);
+    setAnswer(null);
     setLastTask({ description, data });
     setProgress({ currentPhase: "capture", steps: [], elapsedMs: 0 });
     setTask({
@@ -265,6 +272,9 @@ export function App() {
     if (response?.needs?.length) {
       setNeeds(response.needs);
     }
+    if (response?.answer) {
+      setAnswer(response.answer);
+    }
 
     // An empty plan is a legitimate outcome — extraction tasks never
     // produce one. Only a genuine pipeline failure should fall back, or we
@@ -283,7 +293,9 @@ export function App() {
         totalSteps: stepCount,
         startTime: Date.now(),
         endTime: Date.now(),
-        result: response.extractedData
+        result: response.answer
+          ? response.answer.text
+          : response.extractedData
           ? `Extracted ${response.extractedData.summary.fieldCount} fields (${response.extractedData.summary.maskedFieldCount} masked) — on-device, nothing sent`
           : `${response.piiDetection?.summary?.totalRegions || 0} PII detected, ${response.redactionSummary?.redacted || 0} redacted, ${stepCount} steps planned`,
       });
@@ -453,6 +465,7 @@ export function App() {
                 </div>
               </div>
             )}
+            {!progress && answer && <AnswerPanel answer={answer} />}
             {!progress && needs && needs.length > 0 && (
               <NeedsInputPanel
                 needs={needs}

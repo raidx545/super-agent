@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "setup:ort": "node scripts/copy-ort-wasm.mjs",
-    "dev": "node scripts/copy-ort-wasm.mjs && wxt",
-    "build": "node scripts/copy-ort-wasm.mjs && wxt build",
-    "build:firefox": "node scripts/copy-ort-wasm.mjs && wxt build -b firefox",
+    "dev": "node scripts/copy-ort-wasm.mjs && node scripts/copy-mediapipe.mjs && wxt",
+    "build": "node scripts/copy-ort-wasm.mjs && node scripts/copy-mediapipe.mjs && wxt build",
+    "build:firefox": "node scripts/copy-ort-wasm.mjs && node scripts/copy-mediapipe.mjs && wxt build -b firefox",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "test": "vitest run",
@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "fmt": "prettier --write src/",
     "models": "node scripts/download-models.mjs",
-    "server": "node server/index.js"
+    "server": "node server/index.js",
+    "setup:mediapipe": "node scripts/copy-mediapipe.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

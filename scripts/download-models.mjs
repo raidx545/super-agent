@@ -46,6 +46,13 @@ const FILES = [
     kind: "onnx",
   },
   {
+    name: "BlazeFace short-range (face detection)",
+    out: "blaze_face_short_range.tflite",
+    url: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+    bytes: 229746,
+    kind: "onnx",
+  },
+  {
     name: "English char dictionary (ppocrv5_en_dict)",
     out: "ppocr-rec-en.dict.txt",
     url: `${BASE}/languages/english/dict.txt`,

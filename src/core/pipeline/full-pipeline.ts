@@ -5,16 +5,21 @@
 //   - DOM extraction (PERCEIVE_PAGE)
 //   - Screenshot capture (DO_CAPTURE_TAB / CAPTURE_SCREENSHOT)
 //   - Action execution (EXECUTE_ACTION)
-//   - Visual overlay (SHOW_PII_OVERLAY / INJECT_REDACTION_CSS)
+//   - Screenshot redaction happens offscreen; the page is never modified
 //
 // NEVER accesses document, window, or DOM APIs.
 // ============================================================
 
-import { detectAllPII, maskPIIInText, type PIIDetectionResult } from "../privacy/pii-detector";
+import { detectAllPII, maskPIIInText, type PIIDetectionResult, type PIIRegion } from "../privacy/pii-detector";
 import { extractPageData, type ExtractedData } from "../extraction/page-extractor";
 import { decomposeTask, actionDescription, type SubTask } from "../agent/task-decomposer";
 import { computeRequirements, summarizeOutcome, type RequiredInput } from "../agent/requirements";
-import { generateDOMRedactionCSS } from "../privacy/redaction-engine";
+import {
+  isQuestionTask,
+  answerFromPageState,
+  buildVisionQuestionPrompt,
+  type Answer,
+} from "../agent/question-answering";
 import { initializeServer, isServerAvailable, getActiveProvider, type SanitizedContext, type PlanResult } from "../agent/server-bridge";
 import { callOffscreen } from "../runtime/messaging";
 import type { OcrResult } from "../../types/runtime";
@@ -76,6 +81,8 @@ export interface PipelineResult {
   piiReview?: PIIReviewField[];
   /** What the agent still needs FROM THE USER to finish. */
   needs?: RequiredInput[];
+  /** Plain-language answer, when the task was a question rather than an action. */
+  answer?: Answer;
   /** One line covering both what was done and what is outstanding. */
   outcome?: string;
   error?: string;
@@ -337,8 +344,70 @@ export async function executeFullPipeline(
         console.warn("[VLESS] Offscreen OCR failed:", err);
       }
     }
+    // Faces must be found in the offscreen document — the service worker has
+    // no canvas and no FaceDetector. Passing `undefined` for the vision canvas
+    // here (as this did) meant detectPIIFromVision never ran, so an applicant
+    // photo on a government form was detected as nothing and shipped
+    // unredacted.
+    let faceRegions: PIIRegion[] = [];
+    // Re-OCR verification proves no readable TEXT survived redaction. It says
+    // nothing about a face, which is not text. So pixels may only be sent if
+    // we actually looked for faces — an unavailable detector means we cannot
+    // vouch for the frame, however clean the OCR pass came back.
+    let faceDetectionRan = false;
+    if (screenshotDataUrl) {
+      try {
+        const faceResult = await callOffscreen("detectFaces", {
+          imageDataUrl: screenshotDataUrl,
+          viewportWidth: domData.metadata?.viewportWidth,
+          viewportHeight: domData.metadata?.viewportHeight,
+        });
+        // Every remaining path is a real model, so a detection is a detection.
+        const mlBacked = faceResult.method !== "unavailable";
+        faceDetectionRan = mlBacked;
+        faceRegions = faceResult.faces.map((f, i) => ({
+          id: `pii-face-${i + 1}`,
+          category: "face" as const,
+          // A skin-tone heuristic guess is not the same evidence as a model
+          // detection. Reporting both as "critical" made a page of logos read
+          // as five critical faces.
+          sensitivity: (mlBacked ? "critical" : "medium") as PIIRegion["sensitivity"],
+          boundingBox: { x: f.x, y: f.y, width: f.width, height: f.height },
+          textValue: null,
+          fieldSelector: null,
+          confidence: f.confidence,
+          source: "vision" as const,
+          detectionMethod:
+            faceResult.method === "blazeface"
+              ? "Face detected via BlazeFace (on-device model)"
+              : "Face detected via FaceDetector API (on-device ML)",
+          redactionStrategy: "blur" as const,
+        }));
+        if (faceResult.method === "unavailable" && faceResult.reason) {
+          console.warn("[VLESS] Face detection skipped:", faceResult.reason);
+        }
+      } catch (err) {
+        console.warn("[VLESS] Offscreen face detection failed:", err);
+      }
+    }
+
     const detectionResult = await runStep(detectStep, async () => {
-      return detectAllPII(domData, undefined, ocrTextBlocks.length > 0 ? ocrTextBlocks : undefined);
+      const base = await detectAllPII(
+        domData,
+        undefined,
+        ocrTextBlocks.length > 0 ? ocrTextBlocks : undefined
+      );
+      if (faceRegions.length > 0) {
+        base.regions = [...base.regions, ...faceRegions];
+        base.summary.totalRegions = base.regions.length;
+        base.summary.criticalCount += faceRegions.filter(
+          (r) => r.sensitivity === "critical"
+        ).length;
+        base.summary.bySource.vision += faceRegions.length;
+        base.summary.byCategory.face =
+          (base.summary.byCategory.face || 0) + faceRegions.length;
+      }
+      return base;
     });
 
     if (detectionResult) {
@@ -362,31 +431,20 @@ export async function executeFullPipeline(
     const redactStep = addStep("redact");
     let redactedScreenshotUrl: string | null = null;
     const redactResult = await runStep(redactStep, async () => {
-      // Inject redaction CSS into the page
-      const css = generateDOMRedactionCSS(piiDetection.regions);
-      if (css.trim()) {
-        await sendToContentScript("INJECT_REDACTION_CSS", css);
-        redactionSummary.cssInjected = true;
-      }
-
-      // Show PII overlay on the page
-      await sendToContentScript("SHOW_PII_OVERLAY", {
-        regions: piiDetection.regions
-          .filter((r) => r.boundingBox)
-          .map((r) => ({
-            id: r.id,
-            category: r.category,
-            sensitivity: r.sensitivity,
-            boundingBox: r.boundingBox!,
-            confidence: r.confidence,
-          })),
-        summary: {
-          totalRegions: piiDetection.summary.totalRegions,
-          criticalCount: piiDetection.summary.criticalCount,
-          highCount: piiDetection.summary.highCount,
-        },
-      });
-      redactionSummary.overlayShown = true;
+      // The live page is deliberately left ALONE.
+      //
+      // Redaction exists to protect what is transmitted, not to hide the
+      // user's own screen from them. Injecting blur CSS and drawing [FACE]
+      // boxes over the page made their own data unreadable and littered a
+      // bank's login page with labelled rectangles — all to solve a problem
+      // that only exists at the network boundary.
+      //
+      // Anything a previous run injected is cleared here, so a page can
+      // never be left in a modified state.
+      await sendToContentScript("REMOVE_REDACTION_CSS", null);
+      await sendToContentScript("HIDE_PII_OVERLAY", null);
+      redactionSummary.cssInjected = false;
+      redactionSummary.overlayShown = false;
 
       // Canvas redaction on screenshot via offscreen ML host
       if (screenshotDataUrl) {
@@ -401,7 +459,12 @@ export async function executeFullPipeline(
               strategy: r.redactionStrategy as "blur" | "black_box" | "pixelate" | "mask_text",
             }));
 
-          if (redactRegions.length > 0) {
+          // Run the pass even with zero regions. A frame with nothing to
+          // redact still needs to become a VERIFIED frame — "no regions were
+          // flagged" is an assumption, whereas re-OCR finding no readable PII
+          // in the pixels is evidence. Without this, any clean page made
+          // vision questions impossible.
+          {
             const redacted = await callOffscreen("redactScreenshot", {
               imageDataUrl: screenshotDataUrl,
               regions: redactRegions,
@@ -440,7 +503,9 @@ export async function executeFullPipeline(
     // If true, re-OCR confirmed zero PII in the redacted frame
     let redactionVerified = false;
     const verifyTarget = redactedScreenshotUrl || screenshotDataUrl;
-    if (verifyTarget && redactionSummary.redacted > 0) {
+    // Verify whenever a frame exists. Gating this on "something was redacted"
+    // meant a clean page was never verified, and therefore never sendable.
+    if (verifyTarget) {
       const verifyStep = addStep("verify_redaction");
       const verifyResult = await runStep(verifyStep, async () => {
         // Re-OCR the REDACTED screenshot via offscreen to prove PII is gone
@@ -502,6 +567,119 @@ export async function executeFullPipeline(
     // planner has no vocabulary for "read", so sending an extraction
     // request through it produces dozens of invented clicks.
     // ════════════════════════════════════════════════════════
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 5a-Q: QUESTION SHORT-CIRCUIT
+    //
+    // A question gets an answer, not a plan. Routing "check whether I
+    // uploaded a photo" through the action planner made the agent start
+    // typing into unrelated fields to answer a yes/no question.
+    //
+    // Most questions are answerable from the page state we already hold,
+    // which costs nothing and sends nothing.
+    // ════════════════════════════════════════════════════════
+
+    if (isQuestionTask(input.taskDescription)) {
+      const answerStep = addStep("answer");
+      let answer = await runStep(answerStep, async () =>
+        answerFromPageState(input.taskDescription, domData, piiDetection)
+      );
+
+      // Only if the page state genuinely cannot settle it do we look at
+      // pixels — and then only a frame that has been redacted AND verified.
+      //
+      // Two refusals matter here. We never send the raw capture. And we never
+      // send a frame whose cleanliness we could not confirm: "we detected
+      // nothing" is not evidence that there is nothing, it is equally the
+      // signature of a detector that failed. Re-OCR verification is what turns
+      // one into the other.
+      const canSendPixels =
+        Boolean(redactedScreenshotUrl) && redactionVerified && faceDetectionRan;
+
+      if (answer && answer.source === "unanswered" && canSendPixels) {
+        try {
+          const { askWithImage } = await import("../agent/llm-providers");
+          const { system, user } = buildVisionQuestionPrompt(input.taskDescription);
+          const text = await askWithImage(system, user, redactedScreenshotUrl!);
+          if (text) {
+            answer = {
+              text,
+              source: "vision",
+              confidence: 0.7,
+              // Hand back the exact bytes that went out, so the claim is
+              // inspectable instead of assertable.
+              frameSent: redactedScreenshotUrl ?? undefined,
+            };
+            privacyProof.dataSentToServer.rawScreenshot = false;
+          }
+        } catch (err) {
+          console.warn("[VLESS] Vision question failed:", err);
+        }
+      }
+
+      if (answer && answer.source === "unanswered") {
+        // Say WHY, rather than shrugging. A refusal the user cannot explain
+        // is indistinguishable from a bug — which is exactly how a silent
+        // "could not answer" reads.
+        const why = !screenshotDataUrl
+          ? "I could not answer that from the page structure, and no screenshot was captured to look at."
+          : !redactedScreenshotUrl
+            ? "I could not answer that from the page structure, and the screenshot could not be prepared for sending."
+            : !redactionVerified
+              ? "I could not answer that from the page structure. Answering would mean sending a screenshot, but re-OCR could not confirm the frame is free of readable PII, so I will not transmit it."
+              : !faceDetectionRan
+                ? "I could not answer that from the page structure. Answering would mean sending a screenshot, but the face model is not installed — so I cannot confirm no face is in the frame. Run `pnpm models` and reload, then ask again."
+                : "I could not answer that from this page.";
+        answer = { text: why, source: "unanswered", confidence: 0 };
+      }
+
+      answerStep.details = answer?.source === "on-device"
+        ? "Answered on-device"
+        : answer?.source === "vision"
+          ? "Answered from redacted screenshot"
+          : "No answer";
+
+      const qLatency = performance.now() - startTime;
+      const findQMs = (n: string) => steps.find((st) => st.name === n)?.latencyMs || 0;
+
+      privacyProof.proofDescription =
+        answer?.source === "on-device"
+          ? "Answered entirely on-device. No provider was contacted."
+          : "Answered from the redacted frame. The raw screenshot never left the device.";
+
+      return {
+        success: Boolean(answer && answer.source !== "unanswered"),
+        phase: "complete",
+        steps,
+        plan: [],
+        piiDetection,
+        redactionSummary,
+        planResult: {
+          success: true,
+          steps: [],
+          reasoning: "Question answered — no actions planned.",
+          provider: answer?.source === "on-device" ? "on-device" : "vision",
+          latencyMs: findQMs("answer"),
+        },
+        privacyProof,
+        reasoningTrace: completeTrace(true),
+        latency: {
+          capture: findQMs("capture"),
+          ocr: findQMs("detect_pii"),
+          piiDetection: findQMs("detect_pii"),
+          redaction: findQMs("redact"),
+          verification: findQMs("verify_redaction"),
+          planning: 0,
+          execution: 0,
+          total: qLatency,
+          backend: answer?.source === "on-device" ? "on-device" : "vision",
+          tier: "auto",
+        },
+        totalLatencyMs: qLatency,
+        answer: answer ?? undefined,
+        outcome: answer?.text,
+      };
+    }
 
     const subTasks = decomposeTask(input.taskDescription);
     const wantsExtraction = subTasks.some((st) => st.kind === "extract");
@@ -708,7 +886,22 @@ export async function executeFullPipeline(
         sendToContentScript("PERCEIVE_PAGE", null)
       );
       if (after && after.forms) {
-        piiReview = buildPIIReview(after, piiDetection);
+        // Only review fields the agent actually WROTE. A submit- or click-only
+        // task writes nothing, and listing every value on the page after it
+        // reads as an unrequested data dump rather than a review.
+        const wroteTo = new Set(
+          planResult.steps
+            .filter((st) => st.action.type === "type" || st.action.type === "select")
+            .map((st) => st.action.target || "")
+            .filter(Boolean)
+        );
+        piiReview = wroteTo.size > 0
+          ? buildPIIReview(after, piiDetection).filter((f) =>
+              wroteTo.has(f.selector) ||
+              wroteTo.has(f.selector.replace(/^#/, "")) ||
+              [...wroteTo].some((t) => f.label && t.toLowerCase() === f.label.toLowerCase())
+            )
+          : [];
         needs = computeRequirements(after, piiDetection, input.dataContext);
         outcome = summarizeOutcome(
           executionResult.completed,
@@ -716,7 +909,7 @@ export async function executeFullPipeline(
           needs
         );
         reviewStep.details =
-          `${piiReview.length} sensitive fields` +
+          `${piiReview.length} field(s) written` +
           (needs.length > 0 ? ` · ${needs.length} still need a value` : " · nothing outstanding");
       }
     }

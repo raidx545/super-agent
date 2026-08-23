@@ -147,6 +147,17 @@ export interface OffscreenMethods {
     };
     result: { imageDataUrl: string; regionsRedacted: number };
   };
+  /** Detect faces in a screenshot. Offscreen-only: needs a real canvas and
+   *  the FaceDetector API, neither of which exists in a service worker. */
+  detectFaces: {
+    params: { imageDataUrl: string; viewportWidth?: number; viewportHeight?: number };
+    result: {
+      faces: Array<{ x: number; y: number; width: number; height: number; confidence: number }>;
+      method: "blazeface" | "facedetector" | "unavailable";
+      /** Why no detector ran, when method is "unavailable". */
+      reason?: string;
+    };
+  };
   /** Verify a redacted screenshot: re-OCR and check for residual PII text. */
   verifyRedaction: {
     params: { imageDataUrl: string };

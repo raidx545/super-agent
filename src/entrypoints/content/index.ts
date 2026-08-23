@@ -301,6 +301,12 @@ export default defineContentScript({
           formCount: forms.length,
           totalElements: document.querySelectorAll("*").length,
           interactiveElements: elements.length,
+          // Screenshots come back at devicePixelRatio scale, while every DOM
+          // rect is in CSS pixels. Without these the offscreen redactor cannot
+          // convert between the two and blur boxes land at the wrong size.
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio || 1,
         },
         confidence: 0.85,
         perceptionTime: performance.now() - startTime,

@@ -91,3 +91,65 @@ describe("resolveDataValue tolerance", () => {
     expect(resolve({}, "")).toBeUndefined();
   });
 });
+
+describe("face detection wiring", () => {
+  // Regression: the pipeline called detectAllPII(domData, undefined, ocr),
+  // so the vision canvas was never supplied and detectPIIFromVision — the
+  // only path that finds faces — never ran. An applicant photo on a UIDAI
+  // form was detected as nothing and left unredacted.
+  it("faces are detected offscreen, not with an undefined canvas", () => {
+    expect(src).toContain('callOffscreen("detectFaces"');
+  });
+
+  it("face regions are merged into the detection result", () => {
+    expect(src).toContain("faceRegions");
+    expect(src).toMatch(/category: "face"/);
+    // Faces are critical and must be blurred, not merely noted.
+    expect(src).toMatch(/redactionStrategy: "blur"/);
+  });
+
+  it("viewport dimensions are passed so blur boxes scale correctly", () => {
+    // Screenshots are devicePixelRatio-scaled; DOM rects are CSS pixels.
+    expect(src).toContain("viewportWidth: domData.metadata?.viewportWidth");
+  });
+});
+
+describe("review is scoped to what was written", () => {
+  it("only fields the plan typed or selected are reviewed", () => {
+    // A submit-only task writes nothing; listing every value on the page
+    // afterwards reads as an unrequested data dump.
+    expect(src).toContain("wroteTo");
+    expect(src).toMatch(/action\.type === "type" \|\| st\.action\.type === "select"/);
+  });
+});
+
+describe("viewport capture", () => {
+  const content = readFileSync(
+    new URL("../src/entrypoints/content/index.ts", import.meta.url), "utf8");
+
+  it("the content script reports viewport size and DPR", () => {
+    expect(content).toContain("viewportWidth: window.innerWidth");
+    expect(content).toContain("viewportHeight: window.innerHeight");
+    expect(content).toContain("devicePixelRatio");
+  });
+});
+
+describe("the live page is never modified", () => {
+  // The user's own screen is not the threat model. Blur CSS made their own
+  // values unreadable, and [FACE] boxes littered a bank login page with
+  // labelled rectangles — all to solve a problem that exists only at the
+  // network boundary.
+  it("redaction CSS is removed, never injected", () => {
+    expect(src).toContain('sendToContentScript("REMOVE_REDACTION_CSS"');
+    expect(src).not.toContain('sendToContentScript("INJECT_REDACTION_CSS"');
+  });
+
+  it("the PII overlay is hidden, never shown", () => {
+    expect(src).toContain('sendToContentScript("HIDE_PII_OVERLAY"');
+    expect(src).not.toContain('sendToContentScript("SHOW_PII_OVERLAY"');
+  });
+
+  it("screenshot redaction still runs offscreen", () => {
+    expect(src).toContain('callOffscreen("redactScreenshot"');
+  });
+});
