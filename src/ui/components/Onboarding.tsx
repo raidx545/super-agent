@@ -6,35 +6,30 @@ interface OnboardingProps {
 
 const STEPS = [
   {
-    icon: "🐾",
     title: "Welcome to VLESS",
     description:
       "A privacy-preserving browser agent that sees your screen, understands your intent, and automates web tasks — without sending a single pixel to the cloud.",
     color: "from-blue-600 to-purple-600",
   },
   {
-    icon: "🔒",
     title: "100% On-Device",
     description:
       "Every AI model runs in your browser. Screenshots never leave your device. Form data stays local. Zero network requests during operation.",
     color: "from-green-600 to-emerald-600",
   },
   {
-    icon: "🧠",
     title: "Connect an AI Provider",
     description:
       "VLESS needs an LLM to understand your requests. Choose one:\n\n• Ollama (free, local) — install Ollama + pull qwen2.5:1.5b\n• Claude / OpenAI / OpenRouter — paste your API key\n\nTakes 30 seconds. Without this, only basic rules work.",
     color: "from-purple-600 to-pink-600",
   },
   {
-    icon: "👁️",
     title: "Visual Debug",
     description:
       "See exactly what the agent perceives — bounding boxes, confidence scores, and a full reasoning trace. Complete transparency.",
     color: "from-orange-600 to-red-600",
   },
   {
-    icon: "⚡",
     title: "Ready to Go",
     description:
       "Click the extension icon to open the side panel. Describe any task in natural language and the AI will plan and execute it. Try: 'Fill this form with my data'.",
@@ -87,8 +82,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
         {/* Step content */}
         <div className="text-center">
-          {/* Icon */}
-          <div className="text-6xl mb-6 animate-bounce">{step.icon}</div>
+          <div className="mx-auto mb-6 grid h-12 w-12 place-items-center rounded-2xl border border-gray-700 bg-gray-900 text-sm font-bold tracking-[-0.08em] text-white">
+            V
+          </div>
 
           {/* Title */}
           <h1 className="text-xl font-bold text-white mb-3">{step.title}</h1>
@@ -123,7 +119,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
                 : "bg-gray-800 text-white hover:bg-gray-700 border border-gray-700"
             }`}
           >
-            {isLast ? "Get Started 🚀" : "Next →"}
+            {isLast ? "Get Started" : "Next"}
           </button>
         </div>
       </div>

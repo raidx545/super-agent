@@ -32,7 +32,8 @@ function formatBody(body: string): string {
 function elideDataUrls(text: string): string {
   return text.replace(
     /"data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]{40,}"/g,
-    (m) => `"data:image/…;base64,<${(m.length / 1024).toFixed(0)} KB of redacted image>"`
+    (m) =>
+      `"data:image/…;base64,<${(m.length / 1024).toFixed(0)} KB of redacted image>"`,
   );
 }
 
@@ -42,33 +43,30 @@ export function OutboundPayloadPanel({ payloads }: Props) {
 
   if (payloads.length === 0) {
     return (
-      <div className="mx-4 mt-4">
-        <div className="rounded-lg border border-emerald-800/40 bg-emerald-900/15 p-3">
-          <div className="flex items-center gap-2">
-            <span className="text-emerald-400">📡</span>
-            <span className="text-xs font-medium text-emerald-200">
-              Nothing was sent
-            </span>
-          </div>
-          <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
-            This task completed without a single outbound request. There is no
-            payload to inspect because none was produced.
-          </p>
-        </div>
-      </div>
+      <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+          Egress record
+        </p>
+        <p className="mt-1 text-[13px] text-stone-100">Nothing was sent</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">
+          This task completed without a single outbound request. There is no
+          payload to inspect because none was produced.
+        </p>
+      </section>
     );
   }
 
   return (
-    <div className="mx-4 mt-4 space-y-2">
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-400">📡</span>
-          <span className="text-xs font-medium text-gray-200">
-            {payloads.length} request{payloads.length === 1 ? "" : "s"} left the device
-          </span>
-        </div>
-        <p className="mt-1 text-[10px] leading-relaxed text-gray-500">
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+          Egress record
+        </p>
+        <p className="mt-1 text-[13px] text-stone-100">
+          {payloads.length} request{payloads.length === 1 ? "" : "s"} left the
+          device
+        </p>
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">
           Exact request bodies, captured at the egress guard. This is what the
           provider received.
         </p>
@@ -81,14 +79,22 @@ export function OutboundPayloadPanel({ payloads }: Props) {
         const open = openIndex === i;
 
         return (
-          <div key={`${p.timestamp}-${i}`} className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+          <div
+            key={`${p.timestamp}-${i}`}
+            className="mt-3 border-t border-stone-800 pt-3"
+          >
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[10px] text-gray-300">{p.method}</span>
-              <span className="flex-1 truncate font-mono text-[10px] text-gray-400" title={p.url}>
+              <span className="font-mono text-[10px] text-stone-300">
+                {p.method}
+              </span>
+              <span
+                className="flex-1 truncate font-mono text-[10px] text-stone-400"
+                title={p.url}
+              >
                 {p.url}
               </span>
               <span
-                className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                className={`shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] ${
                   found.length === 0
                     ? "border-emerald-800/50 bg-emerald-900/20 text-emerald-300"
                     : "border-red-800/50 bg-red-900/20 text-red-300"
@@ -99,34 +105,38 @@ export function OutboundPayloadPanel({ payloads }: Props) {
             </div>
 
             <div className="mt-1.5 flex items-center gap-2">
-              <span className="font-mono text-[10px] text-gray-600">
-                {(p.bytes / 1024).toFixed(1)} KB{p.truncated ? " (truncated for display)" : ""}
+              <span className="font-mono text-[10px] text-stone-600">
+                {(p.bytes / 1024).toFixed(1)} KB
+                {p.truncated ? " (truncated for display)" : ""}
               </span>
               <button
                 onClick={() => setOpenIndex(open ? null : i)}
-                className="ml-auto rounded border border-gray-700 px-2 py-1 text-[10px] text-gray-300 transition-colors hover:border-emerald-500 hover:text-emerald-300"
+                className="ml-auto rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
               >
-                {open ? "Hide" : "🔍 Read the payload"}
+                {open ? "Hide payload" : "Read payload"}
               </button>
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(pretty).then(
-                    () => { setCopied(true); setTimeout(() => setCopied(false), 1800); },
-                    () => undefined
+                    () => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1800);
+                    },
+                    () => undefined,
                   );
                 }}
-                className="rounded border border-gray-700 px-2 py-1 text-[10px] text-gray-400 transition-colors hover:border-gray-500"
+                className="rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
               >
-                {copied ? "✓" : "Copy"}
+                {copied ? "Copied" : "Copy"}
               </button>
             </div>
 
             {open && (
               <>
-                <pre className="mt-2 max-h-80 overflow-auto rounded border border-gray-800 bg-gray-950 p-2 font-mono text-[10px] leading-relaxed text-gray-300">
+                <pre className="mt-2 max-h-80 overflow-auto rounded-md border border-stone-800 bg-[#171716] p-2 font-mono text-[10px] leading-relaxed text-stone-300">
                   {pretty}
                 </pre>
-                <p className="mt-1.5 text-[10px] leading-relaxed text-gray-500">
+                <p className="mt-1.5 text-[10px] leading-relaxed text-stone-500">
                   {found.length === 0
                     ? "Re-scanned just now with the same checksum-gated detector used on the page. No PII found — form values appear as hasValue flags, not contents."
                     : "This payload contains matches. That should be impossible — the egress guard blocks validated PII before sending. Worth investigating."}
@@ -136,6 +146,6 @@ export function OutboundPayloadPanel({ payloads }: Props) {
           </div>
         );
       })}
-    </div>
+    </section>
   );
 }

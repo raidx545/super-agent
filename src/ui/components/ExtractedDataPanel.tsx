@@ -28,7 +28,9 @@ export function ExtractedDataPanel({ data }: Props) {
 
   const copyJSON = async (includeRawValues: boolean) => {
     try {
-      await navigator.clipboard.writeText(extractedDataToJSON(data, { includeRawValues }));
+      await navigator.clipboard.writeText(
+        extractedDataToJSON(data, { includeRawValues }),
+      );
       setCopied(includeRawValues ? "raw" : "masked");
       setTimeout(() => setCopied(null), 2000);
     } catch {
@@ -40,51 +42,51 @@ export function ExtractedDataPanel({ data }: Props) {
   const { summary } = data;
 
   return (
-    <div className="mx-4 mt-4 space-y-3">
-      {/* Header */}
-      <div className="p-3 bg-blue-900/20 rounded-lg border border-blue-800/30">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-blue-400">📊</span>
-          <span className="text-xs font-medium text-blue-300">Extracted Data</span>
-        </div>
-        <p className="text-[11px] text-gray-400 truncate" title={data.title}>
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+          Extracted data
+        </p>
+        <p
+          className="mt-1 truncate text-[13px] text-stone-100"
+          title={data.title}
+        >
           {data.title || data.url}
         </p>
-        <p className="text-[10px] text-gray-500 mt-1">
+        <p className="mt-1 text-[10px] text-stone-500">
           {summary.fieldCount} fields · {summary.filledFieldCount} filled ·{" "}
           {summary.maskedFieldCount} sensitive · extracted on-device
         </p>
       </div>
 
-      {/* Controls */}
-      <div className="flex flex-wrap gap-2">
+      <div className="mt-3 flex flex-wrap gap-2">
         {summary.maskedFieldCount > 0 && (
           <button
             onClick={() => setRevealed((r) => !r)}
-            className="text-[10px] px-2 py-1 bg-gray-900 border border-gray-700 rounded hover:border-gray-500 text-gray-300 transition-colors"
+            className="rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
           >
-            {revealed ? "🙈 Mask for sharing" : "👁️ Show real values"}
+            {revealed ? "Mask values" : "Reveal values"}
           </button>
         )}
         {/* Copying matches what is on screen — no surprise mismatch
             between what the user sees and what lands on the clipboard. */}
         <button
           onClick={() => copyJSON(revealed)}
-          className="text-[10px] px-2 py-1 bg-gray-900 border border-gray-700 rounded hover:border-gray-500 text-gray-300 transition-colors"
+          className="rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
         >
-          {copied ? "✅ Copied" : revealed ? "📋 Copy JSON" : "📋 Copy JSON (masked)"}
+          {copied ? "Copied" : revealed ? "Copy JSON" : "Copy masked JSON"}
         </button>
         {revealed && summary.maskedFieldCount > 0 && (
           <button
             onClick={() => copyJSON(false)}
-            className="text-[10px] px-2 py-1 bg-gray-900 border border-gray-700 rounded hover:border-gray-500 text-gray-400 transition-colors"
+            className="rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
           >
             Copy masked instead
           </button>
         )}
       </div>
 
-      <p className="text-[10px] text-gray-500 leading-relaxed">
+      <p className="mt-3 text-[10px] leading-relaxed text-stone-500">
         Read from the page on this device. Nothing was transmitted to produce
         this view.
       </p>
@@ -93,23 +95,30 @@ export function ExtractedDataPanel({ data }: Props) {
       {data.sections.map((section, si) => (
         <div
           key={`${section.title}-${si}`}
-          className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden"
+          className="mt-3 border-t border-stone-800 pt-2.5"
         >
-          <div className="px-3 py-2 bg-gray-800/50 border-b border-gray-800">
-            <span className="text-[11px] font-medium text-gray-300">{section.title}</span>
-            <span className="text-[10px] text-gray-500 ml-2">
+          <div>
+            <span className="text-[11px] font-medium text-stone-300">
+              {section.title}
+            </span>
+            <span className="ml-2 text-[10px] text-stone-500">
               {section.fields.length} fields
             </span>
           </div>
-          <div className="divide-y divide-gray-800/50">
+          <div className="mt-2 divide-y divide-stone-800/80">
             {section.fields.map((field, fi) => (
-              <div key={`${field.label}-${fi}`} className="px-3 py-2 flex gap-3">
-                <span className="text-[10px] text-gray-500 w-1/3 shrink-0 break-words">
+              <div
+                key={`${field.label}-${fi}`}
+                className="flex gap-3 py-2 first:pt-0"
+              >
+                <span className="w-1/3 shrink-0 break-words text-[10px] text-stone-500">
                   {field.label}
                 </span>
-                <span className="text-[11px] text-gray-200 flex-1 break-all font-mono">
+                <span className="flex-1 break-all font-mono text-[11px] text-stone-200">
                   {field.value === "" ? (
-                    <span className="text-gray-600 italic font-sans">empty</span>
+                    <span className="font-sans italic text-stone-600">
+                      empty
+                    </span>
                   ) : revealed && field.rawValue !== undefined ? (
                     field.rawValue
                   ) : (
@@ -117,7 +126,7 @@ export function ExtractedDataPanel({ data }: Props) {
                   )}
                 </span>
                 {field.piiCategory && (
-                  <span className="text-[9px] px-1.5 py-0.5 h-fit bg-red-900/30 text-red-300 rounded border border-red-800/40 shrink-0">
+                  <span className="h-fit shrink-0 rounded-full border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 text-[9px] text-red-300">
                     {field.piiCategory}
                   </span>
                 )}
@@ -128,10 +137,10 @@ export function ExtractedDataPanel({ data }: Props) {
       ))}
 
       {data.sections.length === 0 && (
-        <p className="text-[11px] text-gray-500 italic">
+        <p className="mt-3 text-[11px] italic text-stone-500">
           No structured data found on this page.
         </p>
       )}
-    </div>
+    </section>
   );
 }

@@ -42,15 +42,21 @@ export function OutboundFramePanel({ frame, verified, wasSent }: Props) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="mx-4 mt-4">
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3">
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
         <div className="flex items-center gap-2">
-          <span className="text-gray-400">🖼️</span>
-          <span className="text-xs font-medium text-gray-200">
-            {wasSent ? "Frame that was sent" : "Frame that would be sent"}
-          </span>
+          <div>
+            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+              Redacted frame
+            </p>
+            <p className="mt-1 text-[13px] text-stone-100">
+              {wasSent
+                ? "Frame sent to the provider"
+                : "Frame prepared for sending"}
+            </p>
+          </div>
           <span
-            className={`ml-auto text-[9px] px-1.5 py-0.5 rounded border font-mono ${
+            className={`ml-auto rounded-full border px-1.5 py-0.5 font-mono text-[9px] ${
               verified
                 ? "border-emerald-800/50 text-emerald-300 bg-emerald-900/20"
                 : "border-amber-800/50 text-amber-300 bg-amber-900/20"
@@ -60,35 +66,35 @@ export function OutboundFramePanel({ frame, verified, wasSent }: Props) {
           </span>
         </div>
 
-        <p className="mt-1 text-[10px] leading-relaxed text-gray-500">
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">
           {wasSent
             ? "These are the exact bytes that went into the request body."
             : "Nothing was transmitted for this task. This is the redacted frame that would be used if it were."}
         </p>
 
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-3 flex items-center gap-2">
           <button
             onClick={() => setOpen((v) => !v)}
-            className="rounded border border-gray-700 px-2 py-1 text-[10px] text-gray-300 transition-colors hover:border-emerald-500 hover:text-emerald-300"
+            className="rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
           >
-            {open ? "Hide" : "🔍 Inspect the redaction"}
+            {open ? "Hide frame" : "Inspect frame"}
           </button>
           <button
             onClick={() => openFullSize(frame)}
-            className="text-[10px] text-gray-400 underline hover:text-gray-200"
+            className="text-[10px] text-stone-500 underline decoration-stone-700 underline-offset-4 hover:text-stone-200"
           >
             Open full size
           </button>
         </div>
 
         {open && (
-          <div className="mt-2">
+          <div className="mt-3">
             <img
               src={frame}
               alt="Redacted frame prepared for transmission"
-              className="w-full rounded border border-gray-700"
+              className="w-full rounded-md border border-stone-700"
             />
-            <p className="mt-1.5 text-[10px] leading-relaxed text-gray-500">
+            <p className="mt-1.5 text-[10px] leading-relaxed text-stone-500">
               Faces and flagged regions are destroyed here, not covered — the
               pixels behind them are gone, which is why re-OCR can confirm it.
               Compare against the live page to see the difference.
@@ -96,6 +102,6 @@ export function OutboundFramePanel({ frame, verified, wasSent }: Props) {
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

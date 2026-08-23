@@ -39,7 +39,10 @@ export function PIIReviewPanel({ fields }: Props) {
     const value = valueOf(f);
     setState((s) => ({ ...s, [f.selector]: "saving" }));
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
       if (!tab?.id) throw new Error("no active tab");
       const res = await chrome.tabs.sendMessage(tab.id, {
         type: "EXECUTE_ACTION",
@@ -54,7 +57,10 @@ export function PIIReviewPanel({ fields }: Props) {
         source: "sidepanel",
         timestamp: Date.now(),
       });
-      setState((s) => ({ ...s, [f.selector]: res?.success ? "saved" : "error" }));
+      setState((s) => ({
+        ...s,
+        [f.selector]: res?.success ? "saved" : "error",
+      }));
       setTimeout(() => setState((s) => ({ ...s, [f.selector]: "idle" })), 2000);
     } catch {
       setState((s) => ({ ...s, [f.selector]: "error" }));
@@ -65,20 +71,21 @@ export function PIIReviewPanel({ fields }: Props) {
   const empty = fields.filter((f) => !f.value && f.required);
 
   return (
-    <div className="mx-4 mt-4 space-y-2">
-      <div className="p-3 bg-blue-900/15 rounded-lg border border-blue-800/30">
-        <div className="flex items-center gap-2">
-          <span className="text-blue-400">📝</span>
-          <span className="text-xs font-medium text-blue-200">Review what was filled</span>
-        </div>
-        <p className="text-[10px] text-gray-400 mt-1 leading-relaxed">
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+          Form review
+        </p>
+        <p className="mt-1 text-[13px] text-stone-100">Check what was filled</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">
           Read back from the page after the agent finished. Correct anything
           that is wrong — changes are typed straight into the form.
         </p>
         {empty.length > 0 && (
-          <p className="text-[10px] text-amber-400 mt-1.5">
-            {empty.length} required field{empty.length === 1 ? "" : "s"} still empty —
-            the agent had no local value for {empty.length === 1 ? "it" : "them"}.
+          <p className="mt-1.5 text-[10px] text-amber-300">
+            {empty.length} required field{empty.length === 1 ? "" : "s"} still
+            empty — the agent had no local value for{" "}
+            {empty.length === 1 ? "it" : "them"}.
           </p>
         )}
       </div>
@@ -86,28 +93,28 @@ export function PIIReviewPanel({ fields }: Props) {
       {fields.some((f) => f.value) && (
         <button
           onClick={() => setRevealed((r) => !r)}
-          className="text-[10px] px-2 py-1 bg-gray-900 border border-gray-700 rounded hover:border-gray-500 text-gray-300 transition-colors"
+          className="mt-3 rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
         >
-          {revealed ? "🙈 Mask for sharing" : "👁️ Show real values"}
+          {revealed ? "Mask values" : "Reveal values"}
         </button>
       )}
 
-      <div className="space-y-1.5">
+      <div className="mt-3 divide-y divide-stone-800 border-t border-stone-800">
         {fields.map((f) => {
           const st = state[f.selector] ?? "idle";
           const dirty = isDirty(f);
           return (
-            <div
-              key={f.selector}
-              className="bg-gray-900 rounded-lg border border-gray-800 px-3 py-2"
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-[10px] text-gray-400 flex-1 truncate" title={f.label}>
+            <div key={f.selector} className="py-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span
+                  className="flex-1 truncate text-[10px] text-stone-400"
+                  title={f.label}
+                >
                   {f.label}
-                  {f.required && <span className="text-red-400 ml-0.5">*</span>}
+                  {f.required && <span className="ml-0.5 text-red-300">*</span>}
                 </span>
                 {f.category && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-red-900/30 text-red-300 rounded border border-red-800/40 shrink-0">
+                  <span className="shrink-0 rounded-full border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 text-[9px] text-red-300">
                     {f.category}
                   </span>
                 )}
@@ -119,19 +126,22 @@ export function PIIReviewPanel({ fields }: Props) {
                   value={valueOf(f)}
                   placeholder={f.value ? "" : "empty — type a value"}
                   onChange={(e) =>
-                    setEdits((prev) => ({ ...prev, [f.selector]: e.target.value }))
+                    setEdits((prev) => ({
+                      ...prev,
+                      [f.selector]: e.target.value,
+                    }))
                   }
-                  className="flex-1 min-w-0 text-[11px] font-mono bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                  className="min-w-0 flex-1 rounded-md border border-stone-700 bg-[#171716] px-2 py-1 text-[11px] font-mono text-stone-200 placeholder:text-stone-600 transition-colors focus:border-stone-400 focus:outline-none"
                 />
                 <button
                   onClick={() => void apply(f)}
                   disabled={!dirty || st === "saving"}
-                  className="text-[10px] px-2 py-1 rounded border transition-colors shrink-0 disabled:opacity-35 disabled:cursor-not-allowed border-gray-700 text-gray-300 hover:border-blue-500 hover:text-blue-300"
+                  className="shrink-0 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 transition-colors hover:border-stone-500 hover:text-stone-100 disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   {st === "saving"
                     ? "…"
                     : st === "saved"
-                      ? "✓"
+                      ? "Saved"
                       : st === "error"
                         ? "failed"
                         : "Apply"}
@@ -143,10 +153,10 @@ export function PIIReviewPanel({ fields }: Props) {
       </div>
 
       {fields.length === 0 && (
-        <p className="text-[11px] text-gray-500 italic">
+        <p className="mt-3 text-[11px] italic text-stone-500">
           No sensitive fields were written on this page.
         </p>
       )}
-    </div>
+    </section>
   );
 }

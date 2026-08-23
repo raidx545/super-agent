@@ -6,30 +6,59 @@ interface TaskInputProps {
   onStartTask: (description: string, data?: Record<string, string>) => void;
   onCancelTask: () => void;
   task: AgentTask | null;
-  /**
-   * Result panels (progress, extracted data, PII). They render INSIDE this
-   * component because its root is `h-full` with a `flex-1` spacer pinning
-   * the composer to the bottom — a sibling rendered after it in <main>
-   * gets pushed a full viewport down and looks like it never appeared.
-   */
+  /** The assistant's visible reply. */
   children?: React.ReactNode;
+  /** Privacy and pipeline evidence, intentionally hidden until requested. */
+  details?: React.ReactNode;
+  detailsLabel?: string;
 }
 
 const QUICK_TASKS = [
-  { label: "Fill this form", icon: "📝", prompt: "Fill the current form with my saved data" },
-  { label: "Extract data", icon: "📊", prompt: "Extract all visible data from this page into structured format" },
-  { label: "Navigate to...", icon: "🧭", prompt: "Navigate to the target URL" },
-  { label: "Find & click", icon: "🔍", prompt: "Find and click the target element" },
+  {
+    label: "Fill this form",
+    prompt: "Fill the current form with my saved data",
+  },
+  {
+    label: "Extract page data",
+    prompt: "Extract all visible data from this page into structured format",
+  },
+  { label: "Navigate", prompt: "Navigate to the target URL" },
+  { label: "Find and click", prompt: "Find and click the target element" },
 ];
 
-export function TaskInput({ onStartTask, onCancelTask, task, children }: TaskInputProps) {
+function statusCopy(task: AgentTask): string {
+  if (task.status === "analyzing") return "I’m reading the current page.";
+  if (task.status === "planning")
+    return "I’m mapping the safest way to do that.";
+  if (task.status === "executing")
+    return "I’m carrying out the requested action.";
+  if (task.status === "verifying") return "I’m checking the result.";
+  if (task.status === "recovering")
+    return "I’m recovering and checking what changed.";
+  if (task.status === "completed") return "I’ve finished your request.";
+  return "Done.";
+}
+
+export function TaskInput({
+  onStartTask,
+  onCancelTask,
+  task,
+  children,
+  details,
+  detailsLabel = "Show details",
+}: TaskInputProps) {
   const [input, setInput] = useState("");
   const [showDataFields, setShowDataFields] = useState(false);
   const [dataFields, setDataFields] = useState<Record<string, string>>({});
+  const [showDetails, setShowDetails] = useState(false);
 
   const handleSubmit = () => {
     if (!input.trim()) return;
-    onStartTask(input, Object.keys(dataFields).length > 0 ? dataFields : undefined);
+    setShowDetails(false);
+    onStartTask(
+      input,
+      Object.keys(dataFields).length > 0 ? dataFields : undefined,
+    );
     setInput("");
   };
 
@@ -38,99 +67,101 @@ export function TaskInput({ onStartTask, onCancelTask, task, children }: TaskInp
   // changed and pressed Run themselves.
   const handleQuickTask = (prompt: string) => {
     setInput("");
-    onStartTask(prompt, Object.keys(dataFields).length > 0 ? dataFields : undefined);
+    setShowDetails(false);
+    onStartTask(
+      prompt,
+      Object.keys(dataFields).length > 0 ? dataFields : undefined,
+    );
   };
 
-  const isRunning = task?.status === "executing" || task?.status === "analyzing" || task?.status === "planning" || task?.status === "verifying";
+  const isRunning =
+    task?.status === "executing" ||
+    task?.status === "analyzing" ||
+    task?.status === "planning" ||
+    task?.status === "verifying";
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Active Task Display */}
-      {task && isRunning && (
-        <div className="mx-4 mt-4 p-3 bg-gray-900 rounded-lg border border-gray-800">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-gray-300">
-              {task.status === "analyzing" && "👁️ Analyzing page..."}
-              {task.status === "planning" && "🧠 Planning actions..."}
-              {task.status === "executing" && `⚡ Executing step ${task.currentStep + 1}/${task.totalSteps}`}
-              {task.status === "verifying" && "✅ Verifying action..."}
-              {task.status === "recovering" && "🔄 Recovering from error..."}
-            </span>
-            <button
-              onClick={onCancelTask}
-              className="text-[10px] text-red-400 hover:text-red-300 px-2 py-0.5 rounded bg-red-900/20"
-            >
-              Cancel
-            </button>
-          </div>
-          <p className="text-[11px] text-gray-400 mb-2">{task.description}</p>
+    <div className="flex h-full min-h-0 flex-col bg-[#111110]">
+      <div className="flex-1 overflow-y-auto px-4 py-5">
+        <div className="mx-auto flex min-h-full max-w-[42rem] flex-col">
+          {!task && !children && (
+            <div className="my-auto pb-12">
+              <h2 className="max-w-[17ch] text-[25px] font-medium leading-[1.12] tracking-[-0.035em] text-stone-100">
+                What would you like to do?
+              </h2>
+              <p className="mt-3 max-w-[32ch] text-[13px] leading-5 text-stone-500">
+                I can work with the page in front of you while keeping sensitive
+                data on this device.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-2">
+                {QUICK_TASKS.map((qt) => (
+                  <button
+                    key={qt.label}
+                    onClick={() => handleQuickTask(qt.prompt)}
+                    className="rounded-full border border-stone-700/80 px-3 py-1.5 text-[11px] text-stone-300 transition-colors hover:border-stone-500 hover:bg-stone-800"
+                  >
+                    {qt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-          {/* Progress bar */}
-          <div className="w-full bg-gray-800 rounded-full h-1.5">
-            <div
-              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
-              style={{
-                width: `${task.totalSteps > 0 ? (task.currentStep / task.totalSteps) * 100 : 0}%`,
-              }}
-            />
-          </div>
-          <div className="flex justify-between mt-1">
-            <span className="text-[10px] text-gray-500">
-              {task.currentStep}/{task.totalSteps} steps
-            </span>
-            <span className="text-[10px] text-gray-500">
-              {task.plan.estimatedTime > 0
-                ? `~${Math.round(task.plan.estimatedTime / 1000)}s`
-                : ""}
-            </span>
-          </div>
-        </div>
-      )}
+          {task && (
+            <div className="ml-auto max-w-[88%] rounded-[18px] rounded-br-md bg-[#2c2c2a] px-3.5 py-2.5 text-[13px] leading-5 text-stone-100 shadow-[0_8px_22px_rgba(0,0,0,0.16)]">
+              {task.description}
+            </div>
+          )}
 
-      {/* Completed Task */}
-      {task?.status === "completed" && (
-        <div className="mx-4 mt-4 p-3 bg-green-900/20 rounded-lg border border-green-800/30">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-green-400">✅</span>
-            <span className="text-xs font-medium text-green-300">Task Completed</span>
-          </div>
-          <p className="text-[11px] text-gray-400">{task.result}</p>
-        </div>
-      )}
+          {task && (
+            <div className="mt-5 max-w-[94%] animate-slide-in">
+              <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-stone-400">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${isRunning ? "bg-emerald-400 animate-pulse-dot" : task.status === "failed" ? "bg-red-400" : "bg-stone-500"}`}
+                />
+                VLESS
+              </div>
+              <div
+                className={`rounded-[18px] rounded-tl-md px-3.5 py-3 text-[13px] leading-5 ${task.status === "failed" ? "bg-[#2a1c1d] text-stone-100" : "bg-[#1c1c1b] text-stone-200"}`}
+              >
+                <p>
+                  {task.status === "failed"
+                    ? task.error || "I couldn’t complete that request."
+                    : statusCopy(task)}
+                </p>
+                {isRunning && (
+                  <button
+                    onClick={onCancelTask}
+                    className="mt-2 text-[11px] text-stone-500 underline decoration-stone-700 underline-offset-4 hover:text-stone-300"
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
-      {/* Failed Task */}
-      {task?.status === "failed" && (
-        <div className="mx-4 mt-4 p-3 bg-red-900/20 rounded-lg border border-red-800/30">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-red-400">❌</span>
-            <span className="text-xs font-medium text-red-300">Task Failed</span>
-          </div>
-          <p className="text-[11px] text-gray-400">{task.error || "Unknown error"}</p>
-        </div>
-      )}
+          {children}
 
-      {/* Result panels: progress, extracted data, detected PII */}
-      {children}
-
-      {/* Quick Tasks */}
-      <div className="px-4 mt-4">
-        <p className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider">Quick Actions</p>
-        <div className="grid grid-cols-2 gap-2">
-          {QUICK_TASKS.map((qt) => (
-            <button
-              key={qt.label}
-              onClick={() => handleQuickTask(qt.prompt)}
-              className="flex items-center gap-2 p-2 bg-gray-900 rounded-lg border border-gray-800 hover:border-gray-600 transition-colors text-left"
-            >
-              <span>{qt.icon}</span>
-              <span className="text-[11px] text-gray-300">{qt.label}</span>
-            </button>
-          ))}
+          {details && (
+            <div className="mt-5 border-t border-stone-800/80 pt-3">
+              <button
+                onClick={() => setShowDetails((open) => !open)}
+                aria-expanded={showDetails}
+                className="flex items-center gap-2 text-[11px] text-stone-500 transition-colors hover:text-stone-300"
+              >
+                <span className="grid h-4 w-4 place-items-center rounded-full border border-stone-700 text-[10px] text-stone-400">
+                  {showDetails ? "−" : "+"}
+                </span>
+                {showDetails ? "Hide details" : detailsLabel}
+              </button>
+              {showDetails && (
+                <div className="-mx-4 mt-3 animate-slide-in">{details}</div>
+              )}
+            </div>
+          )}
         </div>
       </div>
-
-      {/* Spacer */}
-      <div className="flex-1" />
 
       {/* Data Fields (optional) */}
       {showDataFields && (
@@ -168,40 +199,49 @@ export function TaskInput({ onStartTask, onCancelTask, task, children }: TaskInp
       )}
 
       {/* Input Area */}
-      <div className="p-4 border-t border-gray-800">
-        <div className="flex items-center gap-2 mb-2">
-          <button
-            onClick={() => setShowDataFields(!showDataFields)}
-            className={`text-[10px] px-2 py-1 rounded transition-colors ${
-              showDataFields
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-            }`}
-          >
-            + Data
-          </button>
-        </div>
-        <div className="flex gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
-            placeholder="Tell the agent what to do..."
-            rows={2}
-            className="flex-1 text-xs bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-200 placeholder-gray-600 resize-none focus:outline-none focus:border-blue-500 transition-colors"
-          />
-          <button
-            onClick={handleSubmit}
-            disabled={!input.trim() || isRunning}
-            className="self-end px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs font-medium rounded-lg transition-colors"
-          >
-            {isRunning ? "..." : "Run"}
-          </button>
+      <div className="border-t border-stone-800/80 bg-[#111110] px-4 pb-4 pt-3">
+        <div className="mx-auto max-w-[42rem]">
+          <div className="mb-2 flex items-center gap-2">
+            <button
+              onClick={() => setShowDataFields(!showDataFields)}
+              className={`rounded-full px-2 py-1 text-[10px] transition-colors ${
+                showDataFields
+                  ? "bg-stone-200 text-stone-950"
+                  : "text-stone-500 hover:bg-stone-800 hover:text-stone-300"
+              }`}
+            >
+              Add context
+            </button>
+          </div>
+          <div className="flex items-end gap-2 rounded-[18px] border border-stone-700/90 bg-[#1b1b1a] p-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)] focus-within:border-stone-500">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit();
+                }
+              }}
+              placeholder="Message VLESS…"
+              rows={2}
+              className="min-h-[42px] flex-1 resize-none bg-transparent px-2.5 py-2 text-[13px] leading-5 text-stone-100 placeholder:text-stone-600 focus:outline-none"
+            />
+            <button
+              onClick={handleSubmit}
+              disabled={!input.trim() || isRunning}
+              aria-label="Send message"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-stone-100 text-stone-950 transition-colors hover:bg-white disabled:bg-stone-800 disabled:text-stone-600"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                className="h-3.5 w-3.5 fill-current"
+              >
+                <path d="M14.55 1.65a.75.75 0 0 0-.83-.16L1.47 6.8a.75.75 0 0 0 .05 1.4l5.07 1.73 1.73 5.07a.75.75 0 0 0 1.4.05l5.3-12.25a.75.75 0 0 0-.47-1.15ZM8 9.06 3.72 7.6l8.94-3.87L8.8 12.67 7.34 8.4l5.32-4.67L8 9.06Z" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>

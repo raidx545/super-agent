@@ -25,14 +25,19 @@ export function NeedsInputPanel({ needs, onRetry }: Props) {
   const [status, setStatus] = useState<Record<string, Status>>({});
   const [applyingAll, setApplyingAll] = useState(false);
 
-  const answered = needs.filter((n) => (values[n.selector] ?? "").trim() !== "");
+  const answered = needs.filter(
+    (n) => (values[n.selector] ?? "").trim() !== "",
+  );
 
   const applyOne = async (need: RequiredInput): Promise<boolean> => {
     const value = (values[need.selector] ?? "").trim();
     if (!value) return false;
     setStatus((s) => ({ ...s, [need.selector]: "saving" }));
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
       if (!tab?.id) throw new Error("no active tab");
       const isSelect = (need.type || "").toLowerCase() === "select";
       const res = await chrome.tabs.sendMessage(tab.id, {
@@ -68,34 +73,38 @@ export function NeedsInputPanel({ needs, onRetry }: Props) {
   const missing = needs.filter((n) => n.reason === "no_local_value").length;
 
   return (
-    <div className="mx-4 mt-4 space-y-2">
-      <div className="p-3 bg-amber-900/15 rounded-lg border border-amber-800/40">
-        <div className="flex items-center gap-2">
-          <span className="text-amber-400">✋</span>
-          <span className="text-xs font-medium text-amber-200">
-            The agent needs {needs.length} value{needs.length === 1 ? "" : "s"} from you
-          </span>
-        </div>
-        <p className="text-[10px] text-gray-400 mt-1 leading-relaxed">
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+          Input required
+        </p>
+        <p className="mt-1 text-[13px] text-stone-100">
+          {needs.length} value{needs.length === 1 ? "" : "s"} needed to continue
+        </p>
+        <p className="mt-1 text-[10px] leading-relaxed text-stone-500">
           {missing > 0
             ? "These are required fields with no saved value. The agent will not guess at them — supply them here and it will fill them in."
             : "These required fields are still empty after the run."}
         </p>
       </div>
 
-      <div className="space-y-1.5">
+      <div className="mt-3 divide-y divide-stone-800 border-t border-stone-800">
         {needs.map((need) => {
           const st = status[need.selector] ?? "idle";
           const value = values[need.selector] ?? "";
           const isSelect = (need.type || "").toLowerCase() === "select";
           return (
-            <div key={need.selector} className="bg-gray-900 rounded-lg border border-gray-800 px-3 py-2">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-[10px] text-gray-300 flex-1 truncate" title={need.label}>
-                  {need.label}<span className="text-red-400 ml-0.5">*</span>
+            <div key={need.selector} className="py-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span
+                  className="flex-1 truncate text-[10px] text-stone-300"
+                  title={need.label}
+                >
+                  {need.label}
+                  <span className="ml-0.5 text-red-300">*</span>
                 </span>
                 {need.category && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-red-900/30 text-red-300 rounded border border-red-800/40 shrink-0">
+                  <span className="shrink-0 rounded-full border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 text-[9px] text-red-300">
                     {need.category}
                   </span>
                 )}
@@ -105,12 +114,19 @@ export function NeedsInputPanel({ needs, onRetry }: Props) {
                 {isSelect && need.options ? (
                   <select
                     value={value}
-                    onChange={(e) => setValues((v) => ({ ...v, [need.selector]: e.target.value }))}
-                    className="flex-1 min-w-0 text-[11px] bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-200 focus:outline-none focus:border-blue-500"
+                    onChange={(e) =>
+                      setValues((v) => ({
+                        ...v,
+                        [need.selector]: e.target.value,
+                      }))
+                    }
+                    className="min-w-0 flex-1 rounded-md border border-stone-700 bg-[#171716] px-2 py-1 text-[11px] text-stone-200 focus:border-stone-400 focus:outline-none"
                   >
                     <option value="">— choose —</option>
                     {need.options.map((o) => (
-                      <option key={o} value={o}>{o}</option>
+                      <option key={o} value={o}>
+                        {o}
+                      </option>
                     ))}
                   </select>
                 ) : (
@@ -118,16 +134,27 @@ export function NeedsInputPanel({ needs, onRetry }: Props) {
                     type="text"
                     value={value}
                     placeholder={need.hint}
-                    onChange={(e) => setValues((v) => ({ ...v, [need.selector]: e.target.value }))}
-                    className="flex-1 min-w-0 text-[11px] font-mono bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                    onChange={(e) =>
+                      setValues((v) => ({
+                        ...v,
+                        [need.selector]: e.target.value,
+                      }))
+                    }
+                    className="min-w-0 flex-1 rounded-md border border-stone-700 bg-[#171716] px-2 py-1 text-[11px] font-mono text-stone-200 placeholder:text-stone-600 focus:border-stone-400 focus:outline-none"
                   />
                 )}
                 <button
                   onClick={() => void applyOne(need)}
                   disabled={!value.trim() || st === "saving"}
-                  className="text-[10px] px-2 py-1 rounded border border-gray-700 text-gray-300 hover:border-amber-500 hover:text-amber-300 transition-colors shrink-0 disabled:opacity-35 disabled:cursor-not-allowed"
+                  className="shrink-0 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 transition-colors hover:border-stone-500 hover:text-stone-100 disabled:cursor-not-allowed disabled:opacity-35"
                 >
-                  {st === "saving" ? "…" : st === "saved" ? "✓" : st === "error" ? "failed" : "Fill"}
+                  {st === "saving"
+                    ? "Saving"
+                    : st === "saved"
+                      ? "Saved"
+                      : st === "error"
+                        ? "Failed"
+                        : "Apply"}
                 </button>
               </div>
             </div>
@@ -136,24 +163,24 @@ export function NeedsInputPanel({ needs, onRetry }: Props) {
       </div>
 
       {answered.length > 1 && (
-        <div className="flex gap-2">
+        <div className="mt-3 flex gap-2">
           <button
             onClick={() => void applyAll()}
             disabled={applyingAll}
-            className="text-[10px] px-2.5 py-1.5 rounded bg-amber-700/40 border border-amber-700/60 text-amber-200 hover:bg-amber-700/60 transition-colors disabled:opacity-50"
+            className="rounded-md bg-stone-100 px-2.5 py-1.5 text-[10px] text-stone-950 transition-colors hover:bg-white disabled:opacity-50"
           >
             {applyingAll ? "Filling…" : `Fill all ${answered.length}`}
           </button>
           {onRetry && (
             <button
               onClick={onRetry}
-              className="text-[10px] px-2.5 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-500 transition-colors"
+              className="rounded-md border border-stone-700 px-2.5 py-1.5 text-[10px] text-stone-300 transition-colors hover:border-stone-500"
             >
               Re-run task
             </button>
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }

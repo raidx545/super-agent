@@ -8,13 +8,17 @@ interface ReasoningTraceProps {
 
 const PHASE_CONFIG: Record<
   ReasoningStep["phase"],
-  { icon: string; color: string; label: string }
+  { color: string; dot: string; label: string }
 > = {
-  observe: { icon: "👁️", color: "text-blue-400", label: "Observing" },
-  think: { icon: "🧠", color: "text-purple-400", label: "Thinking" },
-  act: { icon: "⚡", color: "text-yellow-400", label: "Acting" },
-  verify: { icon: "✅", color: "text-green-400", label: "Verifying" },
-  reflect: { icon: "🔄", color: "text-orange-400", label: "Reflecting" },
+  observe: { color: "text-blue-400", dot: "bg-blue-400", label: "Observing" },
+  think: { color: "text-purple-400", dot: "bg-purple-400", label: "Thinking" },
+  act: { color: "text-yellow-400", dot: "bg-yellow-400", label: "Acting" },
+  verify: { color: "text-green-400", dot: "bg-green-400", label: "Verifying" },
+  reflect: {
+    color: "text-orange-400",
+    dot: "bg-orange-400",
+    label: "Reflecting",
+  },
 };
 
 export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
@@ -30,19 +34,20 @@ export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
   if (steps.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-8">
-        <div className="text-4xl mb-4">🧠</div>
         <h3 className="text-sm font-medium text-gray-300 mb-2">
           Agent Reasoning Trace
         </h3>
         <p className="text-[11px] text-gray-500 leading-relaxed">
-          Start a task to see the agent's thought process in real-time.
-          Every decision is logged with full reasoning and confidence scores.
+          Start a task to see the agent's thought process in real-time. Every
+          decision is logged with full reasoning and confidence scores.
         </p>
         <div className="mt-6 space-y-2 text-left">
           {Object.entries(PHASE_CONFIG).map(([phase, config]) => (
             <div key={phase} className="flex items-center gap-2">
-              <span>{config.icon}</span>
-              <span className={`text-[11px] ${config.color}`}>{config.label}</span>
+              <span className={`h-1.5 w-1.5 rounded-full ${config.dot}`} />
+              <span className={`text-[11px] ${config.color}`}>
+                {config.label}
+              </span>
               <span className="text-[10px] text-gray-600">
                 — {phase === "observe" && "What the agent sees on the page"}
                 {phase === "think" && "What the agent is planning to do"}
@@ -61,22 +66,17 @@ export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
     <div className="flex flex-col h-full">
       {/* Stats Bar */}
       <div className="flex items-center gap-4 px-4 py-2 border-b border-gray-800 bg-gray-900/50">
-        <Stat
-          label="Steps"
-          value={`${steps.length}`}
-          icon="📋"
-        />
+        <Stat label="Steps" value={`${steps.length}`} />
         <Stat
           label="Confidence"
           value={`${Math.round(
-            steps.reduce((sum, s) => sum + s.confidence, 0) / steps.length * 100
+            (steps.reduce((sum, s) => sum + s.confidence, 0) / steps.length) *
+              100,
           )}%`}
-          icon="🎯"
         />
         <Stat
           label="Time"
           value={`${(steps.reduce((sum, s) => sum + s.duration, 0) / 1000).toFixed(1)}s`}
-          icon="⏱️"
         />
       </div>
 
@@ -87,10 +87,7 @@ export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
           const time = new Date(step.timestamp).toLocaleTimeString();
 
           return (
-            <div
-              key={i}
-              className="group relative pl-8"
-            >
+            <div key={i} className="group relative pl-8">
               {/* Timeline line */}
               {i < steps.length - 1 && (
                 <div className="absolute left-3 top-6 bottom-0 w-px bg-gray-800" />
@@ -117,7 +114,6 @@ export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
               <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-800 group-hover:border-gray-700 transition-colors">
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs">{config.icon}</span>
                     <span className={`text-[11px] font-medium ${config.color}`}>
                       {config.label}
                     </span>
@@ -146,18 +142,9 @@ export function ReasoningTrace({ steps, task: _task }: ReasoningTraceProps) {
 
 // ── Sub-components ───────────────────────────────────────────
 
-function Stat({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: string;
-}) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-xs">{icon}</span>
       <div>
         <span className="text-[10px] text-gray-500 block">{label}</span>
         <span className="text-[11px] text-gray-300 font-medium">{value}</span>
@@ -175,9 +162,7 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
         : "bg-red-900/30 text-red-400 border-red-800/50";
 
   return (
-    <span
-      className={`text-[9px] px-1.5 py-0.5 rounded border ${color}`}
-    >
+    <span className={`text-[9px] px-1.5 py-0.5 rounded border ${color}`}>
       {Math.round(confidence * 100)}%
     </span>
   );

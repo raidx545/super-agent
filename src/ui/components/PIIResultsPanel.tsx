@@ -49,71 +49,86 @@ export function PIIResultsPanel({ regions }: Props) {
   }
 
   const withValues = regions.filter((r) => r.textValue);
-  const criticalCount = regions.filter((r) => r.sensitivity === "critical").length;
+  const criticalCount = regions.filter(
+    (r) => r.sensitivity === "critical",
+  ).length;
 
   return (
-    <div className="mx-4 mt-4 space-y-2">
-      <div className="p-3 bg-red-900/10 rounded-lg border border-red-900/30">
+    <section className="mx-4 mt-5 border-y border-stone-800 py-3">
+      <div>
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="w-full flex items-center justify-between"
+          className="flex w-full items-center justify-between text-left"
         >
-          <div className="flex items-center gap-2">
-            <span className="text-red-400">🔒</span>
-            <span className="text-xs font-medium text-red-200">
-              {regions.length} PII regions protected
-            </span>
+          <div>
+            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-stone-400">
+              Redaction record
+            </p>
+            <p className="mt-1 text-[13px] text-stone-100">
+              {regions.length} protected region{regions.length === 1 ? "" : "s"}
+            </p>
           </div>
-          <span className="text-[10px] text-gray-500">{expanded ? "▼" : "▶"}</span>
+          <span className="text-[10px] text-stone-500">
+            {expanded ? "Hide" : "Inspect"}
+          </span>
         </button>
-        <p className="text-[10px] text-gray-500 mt-1 text-left">
+        <p className="mt-1 text-[10px] text-stone-500">
           {criticalCount} critical · {byCategory.size} categories · none of this
           left your device
         </p>
       </div>
 
       {expanded && (
-        <>
+        <div className="mt-3">
           {withValues.length > 0 && (
             <button
               onClick={() => setRevealed((r) => !r)}
-              className="text-[10px] px-2 py-1 bg-gray-900 border border-gray-700 rounded hover:border-gray-500 text-gray-300 transition-colors"
+              className="mb-3 rounded-full border border-stone-700 px-2.5 py-1 text-[10px] text-stone-400 transition-colors hover:border-stone-500 hover:text-stone-200"
             >
-              {revealed ? "🙈 Mask for sharing" : `👁️ Show ${withValues.length} values`}
+              {revealed ? "Mask values" : `Reveal ${withValues.length} values`}
             </button>
           )}
 
           {[...byCategory.entries()].map(([category, items]) => (
             <div
               key={category}
-              className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden"
+              className="border-t border-stone-800 py-2.5 first:border-t-0 first:pt-0"
             >
-              <div className="px-3 py-1.5 bg-gray-800/50 border-b border-gray-800 flex items-center justify-between">
-                <span className="text-[11px] font-medium text-gray-300">{category}</span>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-stone-300">
+                  {category}
+                </span>
                 <span
-                  className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                    SENSITIVITY_STYLE[items[0].sensitivity] ?? SENSITIVITY_STYLE.low
+                  className={`rounded-full border px-1.5 py-0.5 text-[9px] ${
+                    SENSITIVITY_STYLE[items[0].sensitivity] ??
+                    SENSITIVITY_STYLE.low
                   }`}
                 >
                   {items[0].sensitivity}
                 </span>
               </div>
-              <div className="divide-y divide-gray-800/50">
+              <div className="mt-2 divide-y divide-stone-800/80">
                 {items.map((region, i) => (
-                  <div key={`${region.id}-${i}`} className="px-3 py-1.5">
+                  <div key={`${region.id}-${i}`} className="py-2 first:pt-0">
                     <div className="flex items-start gap-2">
-                      <span className="text-[11px] text-gray-200 font-mono break-all flex-1">
-                        {region.textValue
-                          ? revealed
-                            ? region.textValue
-                            : maskValue(region.textValue)
-                          : <span className="text-gray-600 italic font-sans">field flagged, no value</span>}
+                      <span className="flex-1 break-all font-mono text-[11px] text-stone-200">
+                        {region.textValue ? (
+                          revealed ? (
+                            region.textValue
+                          ) : (
+                            maskValue(region.textValue)
+                          )
+                        ) : (
+                          <span className="font-sans italic text-stone-600">
+                            field flagged, no value
+                          </span>
+                        )}
                       </span>
-                      <span className="text-[9px] text-gray-600 shrink-0">
+                      <span className="shrink-0 text-[9px] text-stone-600">
                         {Math.round(region.confidence * 100)}%
                       </span>
                     </div>
-                    <p className="text-[9px] text-gray-600 mt-0.5">
+                    <p className="mt-0.5 text-[9px] text-stone-600">
                       {region.detectionMethod}
                     </p>
                   </div>
@@ -121,8 +136,8 @@ export function PIIResultsPanel({ regions }: Props) {
               </div>
             </div>
           ))}
-        </>
+        </div>
       )}
-    </div>
+    </section>
   );
 }
