@@ -106,16 +106,32 @@ export async function diagnoseWasm(): Promise<string> {
     "ort-wasm-simd-threaded.wasm",
   ];
   const found: string[] = [];
+  const missingGlue: string[] = [];
   for (const name of candidates) {
     try {
       const res = await fetch(base + name, { method: "HEAD" });
-      if (res.ok) found.push(name);
+      if (!res.ok) continue;
+      found.push(name);
+      // ORT loads each variant in TWO parts: the .wasm binary and a .mjs
+      // loader it pulls with a dynamic import(). A binary without its glue
+      // fails as "Failed to fetch dynamically imported module", which ORT
+      // then reports as the far less useful "no available backend found".
+      const glue = name.replace(/\.wasm$/, ".mjs");
+      try {
+        const g = await fetch(base + glue, { method: "HEAD" });
+        if (!g.ok) missingGlue.push(glue);
+      } catch {
+        missingGlue.push(glue);
+      }
     } catch {
       /* unreachable — treated as missing */
     }
   }
   if (found.length === 0) {
     return `No ORT runtime binary is reachable under ${base}. Run \`pnpm setup:ort\` and rebuild. (${notes.join(", ")})`;
+  }
+  if (missingGlue.length > 0) {
+    return `Runtime binaries are present but their loader modules are missing: ${missingGlue.join(", ")}. Each .wasm needs its matching .mjs — run \`pnpm setup:ort\` and rebuild.`;
   }
 
   return `WebAssembly looks usable (${found.length} runtime binaries at ${base}); the failure is elsewhere. ${notes.join(", ")}`;

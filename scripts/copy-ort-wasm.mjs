@@ -14,28 +14,34 @@
 
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { mkdirSync, existsSync, statSync, copyFileSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, copyFileSync, readdirSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
-// ALL wasm variants, not just jsep.
+// Every runtime variant, and BOTH files each one needs.
+//
+// ORT loads a variant in two parts: the .wasm binary AND a .mjs loader glue
+// module that it fetches with a dynamic import() from env.wasm.wasmPaths.
+// Shipping only the .wasm produced:
+//
+//   TypeError: Failed to fetch dynamically imported module:
+//   chrome-extension://<id>/ort/ort-wasm-simd-threaded.asyncify.mjs
+//
+// ...which surfaced as "no available backend found", because every execution
+// provider needs that glue before it can register.
 //
 // We import `onnxruntime-web/webgpu` (jsep), but @huggingface/transformers
-// depends on `onnxruntime-web` too, and the bundler collapses both into ONE
-// ORT instance in the offscreen chunk. Whichever variant that shared instance
-// resolves to — asyncify, jspi, or the plain build — is fetched from
-// env.wasm.wasmPaths, which we point at `ort/`. Shipping only jsep meant that
-// lookup 404'd, initWasm() rejected, ORT cached the rejection, and every later
-// call reported "previous call to 'initWasm()' failed".
-//
-// These are fetched lazily: only the one variant actually needed is ever
-// downloaded at runtime, so the cost is unpacked size, not load time.
-// Resolve via the package's own export map (package.json is not exported).
-const ASSETS = [
-  "ort-wasm-simd-threaded.jsep.wasm",
-  "ort-wasm-simd-threaded.asyncify.wasm",
-  "ort-wasm-simd-threaded.jspi.wasm",
-  "ort-wasm-simd-threaded.wasm",
+// depends on plain `onnxruntime-web`, and the bundler collapses both into one
+// ORT instance. Which variant that instance asks for is not ours to predict,
+// so ship them all. They are fetched lazily — only the pair actually used is
+// ever read at runtime, so the cost is unpacked size, not startup time.
+const VARIANTS = [
+  "ort-wasm-simd-threaded.jsep",
+  "ort-wasm-simd-threaded.asyncify",
+  "ort-wasm-simd-threaded.jspi",
+  "ort-wasm-simd-threaded",
 ];
+const ASSETS = VARIANTS.flatMap((v) => [`${v}.wasm`, `${v}.mjs`]);
+// Resolve via the package's own export map (package.json is not exported).
 const distDir = dirname(require.resolve(`onnxruntime-web/${ASSETS[0]}`));
 const outDir = join(import.meta.dirname, "..", "public", "ort");
 
@@ -65,3 +71,15 @@ for (const name of ASSETS) {
   copied++;
 }
 console.log(`ORT runtime ready in public/ort/ (${copied} copied)`);
+
+// A .wasm without its .mjs registers no execution provider at all, and the
+// resulting error names neither file. Fail the build instead.
+const shipped = new Set(readdirSync(outDir));
+for (const name of shipped) {
+  if (!name.endsWith(".wasm")) continue;
+  const glue = name.replace(/\.wasm$/, ".mjs");
+  if (!shipped.has(glue)) {
+    console.error(`  FAIL  ${name} shipped without its loader glue ${glue}`);
+    process.exitCode = 1;
+  }
+}
